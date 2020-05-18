@@ -5,7 +5,6 @@
 #include <stdint.h>
 #endif
 
-#include "uint256.h"
 #include "sph/sph_fugue.h"
 
 #include "miner.h"
@@ -39,16 +38,19 @@ extern int scanhash_fugue256(int thr_id, uint32_t *pdata, uint32_t *ptarget,
 	static THREAD volatile bool init = false;
 	if(!init)
 	{
+		if(throughputmax == intensity)
+			applog(LOG_INFO, "GPU #%d: using default intensity %.3f", device_map[thr_id], throughput2intensity(throughputmax));
 #if defined WIN32 && !defined _WIN64
 		// 2GB limit for cudaMalloc
 		if(throughputmax > 0x7fffffffULL / (8 * sizeof(uint32_t)))
 		{
 			applog(LOG_ERR, "intensity too high");
 			mining_has_stopped[thr_id] = true;
-			proper_exit(2);
+			proper_exit(EXIT_FAILURE);
 		}
 #endif
 		fugue256_cpu_init(thr_id, throughputmax);
+		mining_has_stopped[thr_id] = false;
 		init = true;
 	}
 
@@ -92,7 +94,7 @@ extern int scanhash_fugue256(int thr_id, uint32_t *pdata, uint32_t *ptarget,
 		if (err != cudaSuccess)
 		{
 			applog(LOG_ERR, "GPU #%d: %s", device_map[thr_id], cudaGetErrorString(err));
-			exit(EXIT_FAILURE);
+			proper_exit(EXIT_FAILURE);
 		}
 	} while (!work_restart[thr_id].restart && ((uint64_t)max_nonce > ((uint64_t)(pdata[19]) + (uint64_t)throughput)));
 

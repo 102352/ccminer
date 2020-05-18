@@ -373,7 +373,7 @@ void x14_shabal512_gpu_hash_64(uint32_t threads, uint32_t startNounce, uint32_t 
 		0x950C3434, 0xAED9A06D, 0x2537DC8D, 0x7CDB5969
 	};
 
-//	if (thread < threads)
+	if (thread < threads)
 	{
 		const uint32_t nounce =  (startNounce + thread);
 		const uint32_t hashPosition = nounce - startNounce;
@@ -472,4 +472,5 @@ __host__ void x14_shabal512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t s
 	dim3 block(threadsperblock);
 
 	x14_shabal512_gpu_hash_64<<<grid, block, 0, gpustream[thr_id]>>>(threads, startNounce, d_hash);
+	CUDA_SAFE_CALL(cudaGetLastError());
 }

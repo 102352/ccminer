@@ -148,7 +148,7 @@ __device__ __constant__ uint32_t c_CNS[80] = {
 
 
 /***************************************************/
-__device__ __forceinline__
+static __device__ __forceinline__
 void rnd512(uint32_t *const __restrict__ statebuffer, uint32_t *const __restrict__ statechainv)
 {
 	int i, j;
@@ -322,7 +322,7 @@ void rnd512(uint32_t *const __restrict__ statebuffer, uint32_t *const __restrict
 }
 
 
-__device__ __forceinline__
+static __device__ __forceinline__
 void rnd512_finalfirst(uint32_t *const statechainv)
 {
 	int i, j;
@@ -469,7 +469,7 @@ void rnd512_finalfirst(uint32_t *const statechainv)
 }
 
 
-__device__ __forceinline__
+static __device__ __forceinline__
 void rnd512_first(uint32_t state[40], uint32_t buffer[8])
 {
 	int i, j;
@@ -569,7 +569,7 @@ void rnd512_first(uint32_t state[40], uint32_t buffer[8])
 }
 
 /***************************************************/
-__device__ __forceinline__
+static __device__ __forceinline__
 void rnd512_nullhash(uint32_t *const state)
 {
 	int i, j;
@@ -730,7 +730,7 @@ void rnd512_nullhash(uint32_t *const state)
 		state[i + 32] = chainv[i];
 	}
 }
-__device__ __forceinline__
+static __device__ __forceinline__
 void Update512(uint32_t *const __restrict__ statebuffer, uint32_t *const __restrict__ statechainv, const uint32_t *const __restrict__ data)
 {
 #pragma unroll 8
@@ -746,7 +746,7 @@ void Update512(uint32_t *const __restrict__ statebuffer, uint32_t *const __restr
 
 
 /***************************************************/
-__device__ __forceinline__
+static __device__ __forceinline__
 void finalization512(uint32_t *const __restrict__ statechainv, uint32_t *const __restrict__ b)
 {
 	int i, j;
@@ -988,12 +988,12 @@ __launch_bounds__(256, 4)
 #else
 __launch_bounds__(256, 3)
 #endif
-void x11_luffaCubehash512_gpu_hash_64(uint32_t threads, uint32_t startNounce, uint64_t *const g_hash)
+void x11_luffaCubehash512_gpu_hash_64(uint32_t threads, uint32_t startNounce, uint32_t *const g_hash)
 {
 	const uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
-//	if(thread < threads)
+	if(thread < threads)
 	{
-		uint32_t *const Hash = (uint32_t*)&g_hash[8 * thread];
+		uint32_t *const Hash = &g_hash[16 * thread];
 
 		uint32_t statebuffer[8];
 		uint32_t statechainv[40] =
@@ -1273,6 +1273,6 @@ __host__ void x11_luffaCubehash512_cpu_hash_64(int thr_id, uint32_t threads, uin
 	dim3 grid((threads + threadsperblock - 1) / threadsperblock);
 	dim3 block(threadsperblock);
 
-	x11_luffaCubehash512_gpu_hash_64 << <grid, block, 0, gpustream[thr_id]>> >(threads, startNounce, (uint64_t*)d_hash);
+	x11_luffaCubehash512_gpu_hash_64 << <grid, block, 0, gpustream[thr_id]>> >(threads, startNounce, d_hash);
 	CUDA_SAFE_CALL(cudaGetLastError());
 }

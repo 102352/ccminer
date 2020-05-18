@@ -14,12 +14,12 @@ static uint32_t *d_partSum[2][MAX_GPUS]; // fuer bis zu vier partielle Summen
 // True/False tester
 typedef uint32_t(*cuda_compactTestFunction_t)(const uint32_t *inpHash);
 
-__device__ __forceinline__ uint32_t QuarkTrueTest(const uint32_t *inpHash)
+static __device__ __forceinline__ uint32_t QuarkTrueTest(const uint32_t *inpHash)
 {
 	return ((inpHash[0] & 0x08) == 0x08);
 }
 
-__device__ __forceinline__ uint32_t QuarkFalseTest(const uint32_t *inpHash)
+static __device__ __forceinline__ uint32_t QuarkFalseTest(const uint32_t *inpHash)
 {
 	return ((inpHash[0] & 0x08) == 0);
 }
@@ -98,7 +98,7 @@ __global__ void quark_compactTest_gpu_SCAN(uint32_t *data, int width, uint32_t *
 
 	for (int i=1; i<=width; i*=2)
 	{
-		uint32_t n = __shfl_up((int)value, i, width);
+		uint32_t n = SHFL_UP((int)value, i, width);
 
 		if (lane_id >= i) value += n;
 	}
@@ -125,7 +125,7 @@ __global__ void quark_compactTest_gpu_SCAN(uint32_t *data, int width, uint32_t *
 
 		for (int i=1; i<=width; i*=2)
 		{
-			uint32_t n = __shfl_up((int)warp_sum, i, width);
+			uint32_t n = SHFL_UP((int)warp_sum, i, width);
 
 		if (lane_id >= i) warp_sum += n;
 		}

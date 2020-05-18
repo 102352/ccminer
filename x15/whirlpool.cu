@@ -17,7 +17,7 @@ extern uint32_t* whirlpool512_cpu_finalhash_64(int thr_id, uint32_t threads, uin
 
 
 // CPU Hash function
-extern "C" void wcoinhash(void *state, const void *input)
+void wcoinhash(void *state, const void *input)
 {
 	sph_whirlpool_context ctx_whirlpool;
 
@@ -63,9 +63,12 @@ extern int scanhash_whc(int thr_id, uint32_t *pdata,
 	static THREAD volatile bool init = false;
 	if(!init)
 	{
+		if(throughputmax == 1<<20)
+			applog(LOG_INFO, "GPU #%d: using default intensity 20", device_map[thr_id]);
 		CUDA_SAFE_CALL(cudaSetDevice(device_map[thr_id]));
-		cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
-		cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
+		CUDA_SAFE_CALL(cudaDeviceReset());
+		CUDA_SAFE_CALL(cudaSetDeviceFlags(cudaschedule));
+		CUDA_SAFE_CALL(cudaDeviceSetCacheConfig(cudaFuncCachePreferL1));
 		CUDA_SAFE_CALL(cudaStreamCreate(&gpustream[thr_id]));
 #if defined WIN32 && !defined _WIN64
 		// 2GB limit for cudaMalloc
@@ -74,12 +77,13 @@ extern int scanhash_whc(int thr_id, uint32_t *pdata,
 			applog(LOG_ERR, "intensity too high");
 			mining_has_stopped[thr_id] = true;
 			cudaStreamDestroy(gpustream[thr_id]);
-			proper_exit(2);
+			proper_exit(EXIT_FAILURE);
 		}
 #endif
 
-		CUDA_SAFE_CALL(cudaMalloc(&d_hash, 16 * sizeof(uint32_t) * throughputmax));
+		CUDA_SAFE_CALL(cudaMalloc(&d_hash, 16ULL * sizeof(uint32_t) * throughputmax));
 		x15_whirlpool_cpu_init(thr_id, throughputmax, 1 /* old whirlpool */);
+		mining_has_stopped[thr_id] = false;
 
 		init = true;
 	}

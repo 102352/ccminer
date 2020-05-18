@@ -79,7 +79,7 @@ __constant__ uint32_t P[48] = {
 	//58-61
 };
 
-__device__ __forceinline__ void AES_2ROUND(
+static __device__ __forceinline__ void AES_2ROUND(
 	const uint32_t*const __restrict__ sharedMemory,
 	uint32_t &x0, uint32_t &x1, uint32_t &x2, uint32_t &x3,
 	const uint32_t k0)
@@ -133,7 +133,7 @@ __device__ __forceinline__ void AES_2ROUND(
 		sharedMemory[__byte_perm(y2, 0, 0x4443) + 768];
 }
 
-__device__ __forceinline__ void cuda_echo_round(
+static __device__ __forceinline__ void cuda_echo_round(
 	const uint32_t *const __restrict__ sharedMemory, uint32_t *const __restrict__  hash)
 {
 	uint32_t k0;
@@ -371,7 +371,7 @@ void echo_gpu_init_128(uint32_t *const __restrict__ sharedMemory)
 */
 
 
-__device__ __forceinline__
+static __device__ __forceinline__
 void echo_gpu_init(uint32_t *const __restrict__ sharedMemory)
 {
 	/* each thread startup will fill a uint32 */
@@ -389,9 +389,9 @@ void x11_echo512_gpu_hash_64(uint32_t threads, uint32_t startNounce, uint32_t *c
 	__shared__ __align__(128) uint32_t sharedMemory[1024];
 
 	echo_gpu_init(sharedMemory);
-
+	__syncthreads();
 	const uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
-//    if (thread < threads)
+    if (thread < threads)
     {
         const uint32_t nounce = (startNounce + thread);
         const uint32_t hashPosition = nounce - startNounce;
@@ -415,7 +415,7 @@ __host__ void x11_echo512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t sta
     dim3 block(threadsperblock);
 
     x11_echo512_gpu_hash_64<<<grid, block, 0, gpustream[thr_id]>>>(threads, startNounce, d_hash);
-	//MyStreamSynchronize(NULL, order, thr_id);
+	CUDA_SAFE_CALL(cudaGetLastError());
 }
 
 __host__ void x11_echo512_cpu_free(int32_t thr_id)
@@ -432,7 +432,7 @@ void x11_echo512_gpu_hash_64_final(uint32_t threads, uint32_t startNounce, const
 
 		__shared__ __align__(128) uint32_t sharedMemory[1024];
 		echo_gpu_init(sharedMemory);
-
+		__syncthreads();
 		const uint32_t nounce = (startNounce + thread);
 
 		const uint32_t hashPosition = nounce - startNounce;

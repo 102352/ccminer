@@ -63,55 +63,77 @@ int cuda_version()
 void cuda_devicenames()
 {
 	cudaError_t err;
-	int GPU_N;
-	err = cudaGetDeviceCount(&GPU_N);
-	if(err != cudaSuccess)
-	{
-		applog(LOG_ERR, "Unable to query number of CUDA devices! Is an nVidia driver installed?");
-		exit(1);
-	}
-
-	if(opt_n_threads)
-		GPU_N = min(MAX_GPUS, opt_n_threads);
-	for(int i = 0; i < GPU_N; i++)
+	for(int i = 0; i < opt_n_threads; i++)
 	{
 		char vendorname[32] = {0};
 		int dev_id = device_map[i];
 		cudaDeviceProp props;
-		cudaGetDeviceProperties(&props, dev_id);
-
-		device_sm[dev_id] = (props.major * 100 + props.minor * 10);
-
-		if(device_name[dev_id])
+		err = cudaGetDeviceProperties(&props, dev_id);
+		if(err != cudaSuccess)
 		{
-			free(device_name[dev_id]);
-			device_name[dev_id] = NULL;
+			applog(LOG_ERR, "%s", cudaGetErrorString(err));
+			exit(1);
 		}
+
 #ifdef USE_WRAPNVML
 		if(gpu_vendor((uint8_t)props.pciBusID, vendorname) > 0 && strlen(vendorname))
 		{
 			device_name[dev_id] = (char*)calloc(1, strlen(vendorname) + strlen(props.name) + 2);
+			if(device_name[dev_id] == NULL)
+			{
+				applog(LOG_ERR, "Out of memory!");
+				proper_exit(EXIT_FAILURE);
+			}
 			if(!strncmp(props.name, "GeForce ", 8))
 				sprintf(device_name[dev_id], "%s %s", vendorname, &props.name[8]);
 			else
 				sprintf(device_name[dev_id], "%s %s", vendorname, props.name);
 		}
-		else
 #endif
-			device_name[dev_id] = strdup(props.name);
 	}
 }
 
+void cuda_get_device_sm()
+{
+	cudaDeviceProp props;
+	cudaError_t err;
+	int dev_id;
+
+	for(int i = 0; i < opt_n_threads; i++)
+	{
+		dev_id = device_map[i];
+		err = cudaSetDevice(device_map[i]);
+		if(err != cudaSuccess)
+		{
+			applog(LOG_ERR, "%s", cudaGetErrorString(err));
+			exit(1);
+		}
+		err = cudaGetDeviceProperties(&props, dev_id);
+		if(err != cudaSuccess)
+		{
+			applog(LOG_ERR, "%s", cudaGetErrorString(err));
+			exit(1);
+		}
+
+		device_sm[dev_id] = (props.major * 100 + props.minor * 10);
+	}
+}
 
 void cuda_print_devices()
 {
+	cudaError_t err;
 	int ngpus = cuda_num_devices();
-	for (int n=0; n < ngpus; n++) {
+	for(int n = 0; n < min(ngpus, MAX_GPUS); n++)
+	{
 		int m = device_map[n];
 		cudaDeviceProp props;
-		cudaGetDeviceProperties(&props, m);
-		if (!opt_n_threads || n < opt_n_threads)
-			fprintf(stderr, "GPU #%d: SM %d.%d %s\n", m, props.major, props.minor, props.name);
+		err = cudaGetDeviceProperties(&props, m);
+		if(err != cudaSuccess)
+		{
+			applog(LOG_ERR, "%s", cudaGetErrorString(err));
+			exit(1);
+		}
+		fprintf(stdout, "GPU #%d: SM %d.%d %s\n", m, props.major, props.minor, device_name[n]);
 	}
 }
 
@@ -164,7 +186,7 @@ int cuda_finddevice(char *name)
 uint32_t device_intensity(int thr_id, const char *func, uint32_t defcount)
 {
 	uint32_t throughput = gpus_intensity[thr_id] ? gpus_intensity[thr_id] : defcount;
-	if(opt_api_listen!=0) api_set_throughput(thr_id, throughput);
+	api_set_throughput(thr_id, throughput);
 	return throughput;
 }
 
@@ -218,4 +240,45 @@ void cudaReportHardwareFailure(int thr_id, cudaError_t err, const char* func)
 	gpu->hw_errors++;
 	applog(LOG_ERR, "GPU #%d: %s %s", device_map[thr_id], func, cudaGetErrorString(err));
 	sleep(1);
+}
+
+int cuda_gpu_info(struct cgpu_info *gpu)
+{
+	cudaDeviceProp props;
+	if(cudaGetDeviceProperties(&props, gpu->gpu_id) == cudaSuccess)
+	{
+		gpu->gpu_clock = (uint32_t)props.clockRate;
+		gpu->gpu_memclock = (uint32_t)props.memoryClockRate;
+		gpu->gpu_mem = (uint64_t)(props.totalGlobalMem / 1024); // kB
+#if defined(_WIN32) && defined(USE_WRAPNVML)
+																// required to get mem size > 4GB (size_t too small for bytes on 32bit)
+		nvapiMemGetInfo(gpu->gpu_id, &gpu->gpu_memfree, &gpu->gpu_mem); // kB
+#endif
+		gpu->gpu_mem = gpu->gpu_mem / 1024; // MB
+		return 0;
+	}
+	return -1;
+}
+
+double throughput2intensity(uint32_t throughput)
+{
+	double intensity = 0.;
+	uint32_t ws = throughput;
+	uint8_t i = 0;
+	while(ws > 1 && i++ < 32)
+		ws = ws >> 1;
+	intensity = (double)i;
+	if(i && ((1U << i) < throughput))
+	{
+		intensity += ((double)(throughput - (1U << i)) / (1U << i));
+	}
+	return intensity;
+}
+
+void cuda_reset_device(int thr_id, bool *init)
+{
+	int dev_id = device_map[thr_id];
+	cudaSetDevice(dev_id);
+	cudaDeviceReset();
+	cudaDeviceSynchronize();
 }

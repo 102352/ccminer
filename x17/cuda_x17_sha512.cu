@@ -123,7 +123,7 @@ static __constant__ uint64_t K_512[80] = {
 		r[(7+a)&7] = T1 + T2; \
 	}
 
-__device__ __forceinline__
+static __device__ __forceinline__
 uint64_t Tone(const uint64_t* sharedMemory, uint64_t r[8], uint64_t W[80], uint32_t a, uint32_t i)
 {
 	uint64_t e = r[(4 + a) & 7];
@@ -150,7 +150,7 @@ __global__ __launch_bounds__(TPB,6)
 void x17_sha512_gpu_hash_64(uint32_t threads, uint32_t startNounce, uint64_t *g_hash)
 {
 	const uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
-	//	if (thread < threads)
+	if (thread < threads)
 	{
 		uint64_t *inpHash = &g_hash[8 * thread];
 		uint64_t hash[8];
@@ -220,4 +220,5 @@ void x17_sha512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce, 
 	dim3 grid((threads + threadsperblock-1)/threadsperblock);
 	dim3 block(threadsperblock);
 	x17_sha512_gpu_hash_64<<<grid, block, 0, gpustream[thr_id]>>>(threads, startNounce, d_hash );
+	CUDA_SAFE_CALL(cudaGetLastError());
 }

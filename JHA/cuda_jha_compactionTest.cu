@@ -14,19 +14,19 @@ static uint32_t *d_partSum[2][MAX_GPUS]; // für bis zu vier partielle Summen
 // True/False tester
 typedef uint32_t(*cuda_compactTestFunction_t)(uint32_t *inpHash);
 
-__device__ uint32_t JackpotTrueTest(uint32_t *inpHash)
+static __device__ uint32_t JackpotTrueTest(uint32_t *inpHash)
 {
 	uint32_t tmp = inpHash[0] & 0x01;
 	return (tmp == 1);
 }
 
-__device__ uint32_t JackpotFalseTest(uint32_t *inpHash)
+static __device__ uint32_t JackpotFalseTest(uint32_t *inpHash)
 {
 	uint32_t tmp = inpHash[0] & 0x01;
 	return (tmp == 0);
 }
 
-__device__ cuda_compactTestFunction_t d_JackpotTrueFunction = JackpotTrueTest, d_JackpotFalseFunction = JackpotFalseTest;
+static __device__ cuda_compactTestFunction_t d_JackpotTrueFunction = JackpotTrueTest, d_JackpotFalseFunction = JackpotFalseTest;
 
 cuda_compactTestFunction_t h_JackpotTrueFunction[MAX_GPUS], h_JackpotFalseFunction[MAX_GPUS];
 
@@ -102,7 +102,7 @@ __global__ void jackpot_compactTest_gpu_SCAN(uint32_t *data, int width, uint32_t
 
 	for (int i=1; i<=width; i*=2)
 	{
-		uint32_t n = __shfl_up((int)value, i, width);
+		uint32_t n = SHFL_UP((int)value, i, width);
 
 		if (lane_id >= i) value += n;
 	}
@@ -129,7 +129,7 @@ __global__ void jackpot_compactTest_gpu_SCAN(uint32_t *data, int width, uint32_t
 
 		for (int i=1; i<=width; i*=2)
 		{
-			uint32_t n = __shfl_up((int)warp_sum, i, width);
+			uint32_t n = SHFL_UP((int)warp_sum, i, width);
 
 		if (lane_id >= i) warp_sum += n;
 		}

@@ -223,7 +223,7 @@ __global__
 void blakeKeccak256_gpu_hash_80(const uint32_t threads, const uint32_t startNonce, uint32_t * Hash)
 {
 	uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
-//	if (thread < threads)
+	if (thread < threads)
 	{
 		const uint32_t nonce = startNonce + thread;
 		uint32_t h[8];
@@ -673,6 +673,8 @@ void blake256_cpu_setBlock_80(int thr_id, uint32_t *pdata)
 	blake256_compress1st(h, pdata);
 
 	CUDA_SAFE_CALL(cudaMemcpyToSymbolAsync(cpu_h, h, 8 * sizeof(uint32_t), 0, cudaMemcpyHostToDevice, gpustream[thr_id]));
+	if(opt_debug)
+		CUDA_SAFE_CALL(cudaDeviceSynchronize());
 }
 
 __host__
@@ -685,4 +687,6 @@ void blakeKeccak256_cpu_hash_80(const int thr_id, const uint32_t threads, const 
 
 	blakeKeccak256_gpu_hash_80 << <grid, block, 0, gpustream[thr_id] >> > (threads, startNonce, (uint32_t *)Hash);
 	CUDA_SAFE_CALL(cudaGetLastError());
+	if(opt_debug)
+		CUDA_SAFE_CALL(cudaDeviceSynchronize());
 }

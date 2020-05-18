@@ -605,7 +605,7 @@ void x13_fugue512_gpu_hash_64(uint32_t threads, uint32_t startNounce, uint32_t *
 	__shared__ uint32_t mixtabs[1024];
 
 	const uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
-//	if (thread < threads)
+	if (thread < threads)
 	{
 		if (threadIdx.x < 128)
 		{
@@ -618,6 +618,7 @@ void x13_fugue512_gpu_hash_64(uint32_t threads, uint32_t startNounce, uint32_t *
 			mixtabs[768 + threadIdx.x] = ROTR32(mixtabs[threadIdx.x], 24);
 			mixtabs[768 + threadIdx.x + 128] = ROTR32(mixtabs[threadIdx.x + 128], 24);
 		}
+		__syncthreads();
 		const uint32_t nounce =  (startNounce + thread);
 
 		const uint32_t hashPosition = nounce - startNounce;
@@ -861,6 +862,7 @@ void x13_fugue512_gpu_hash_64_final(const uint32_t threads, const uint32_t start
 			mixtabs[(512 + threadIdx.x)] = ROTR32(mixtabs[threadIdx.x], 16);
 			mixtabs[(768 + threadIdx.x)] = ROTR32(mixtabs[threadIdx.x], 24);
 		}
+		__syncthreads();
 		const uint32_t nounce =  (startNounce + thread);
 		const uint32_t hashPosition = nounce - startNounce;
 		const uint32_t *h = &g_hash[hashPosition * 16];
@@ -1141,7 +1143,7 @@ __host__ void x13_fugue512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t st
 	// fprintf(stderr, "threads=%d, %d blocks, %d threads per block, %d bytes shared\n", threads, grid.x, block.x, shared_size);
 
 	x13_fugue512_gpu_hash_64<<<grid, block, 0, gpustream[thr_id]>>>(threads, startNounce, d_hash);
-//	MyStreamSynchronize(NULL, order, thr_id);
+	CUDA_SAFE_CALL(cudaGetLastError());
 }
 __host__ void x13_fugue512_cpu_hash_64_final(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_hash, uint32_t *res)
 {

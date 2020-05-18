@@ -29,7 +29,7 @@ __device__  __align__(16) vectypeS* Tr2;
 __device__  __align__(16) vectypeS* Input;
 __device__  __align__(16) vectypeS* B2;
 
-static uint32_t *d_NNonce[MAX_GPUS]; 
+static uint32_t *d_NNonce[MAX_GPUS];
 
 __constant__  uint32_t pTarget[8];
 __constant__  uint32_t key_init[16];
@@ -122,20 +122,20 @@ static __forceinline__ __device__ void shift256R4(uint32_t * ret, const uint8 &v
 
 /*static __device__ __inline__ void chacha_step(uint32_t &a, uint32_t &b, uint32_t &c, uint32_t &d)
 {
-	asm("{\n\t"
-			"add.u32 %0,%0,%1; \n\t"
-			"xor.b32 %3,%3,%0; \n\t"
-			"prmt.b32 %3, %3, 0, 0x1032; \n\t"
-			"add.u32 %2,%2,%3; \n\t"
-			"xor.b32 %1,%1,%2; \n\t"
-			"shf.l.wrap.b32 %1, %1, %1, 12; \n\t"
-			"add.u32 %0,%0,%1; \n\t"
-			"xor.b32 %3,%3,%0; \n\t"
-			"prmt.b32 %3, %3, 0, 0x2103; \n\t"
-			"add.u32 %2,%2,%3; \n\t"
-			"xor.b32 %1,%1,%2; \n\t"
-			"shf.l.wrap.b32 %1, %1, %1, 7; \n\t}"
-			: "+r"(a), "+r"(b), "+r"(c), "+r"(d));
+asm("{\n\t"
+"add.u32 %0,%0,%1; \n\t"
+"xor.b32 %3,%3,%0; \n\t"
+"prmt.b32 %3, %3, 0, 0x1032; \n\t"
+"add.u32 %2,%2,%3; \n\t"
+"xor.b32 %1,%1,%2; \n\t"
+"shf.l.wrap.b32 %1, %1, %1, 12; \n\t"
+"add.u32 %0,%0,%1; \n\t"
+"xor.b32 %3,%3,%0; \n\t"
+"prmt.b32 %3, %3, 0, 0x2103; \n\t"
+"add.u32 %2,%2,%3; \n\t"
+"xor.b32 %1,%1,%2; \n\t"
+"shf.l.wrap.b32 %1, %1, %1, 7; \n\t}"
+: "+r"(a), "+r"(b), "+r"(c), "+r"(d));
 }
 */
 #if __CUDA_ARCH__ >=500  
@@ -308,7 +308,7 @@ c += d; b = rotate(b^c, 7); \
 	c += d; b = ROTR32(b ^ c, 7); \
 } 
 #if __CUDA_ARCH__ < 500
-static __forceinline__ __device__ void Blake2S(uint32_t *out, const uint32_t* __restrict__  inout, const  uint32_t * __restrict__ TheKey)
+static __forceinline__ __device__ void Blake2S(uint32_t * __restrict__ out, const uint32_t* __restrict__  inout, const  uint32_t * __restrict__ TheKey)
 {
 	uint16 V;
 	uint32_t idx;
@@ -498,7 +498,7 @@ static __forceinline__ __device__ void Blake2S(uint32_t *out, const uint32_t* __
 	((uint8*)out)[0] = V.lo;
 }
 #else
-static __forceinline__ __device__ void Blake2S_v2(uint32_t *out, const uint32_t* __restrict__  inout, const  uint32_t * __restrict__ TheKey)
+static __forceinline__ __device__ void Blake2S_v2(uint32_t * __restrict__ out, const uint32_t* __restrict__  inout, const  uint32_t * __restrict__ TheKey)
 {
 	uint16 V;
 	uint8 tmpblock;
@@ -764,7 +764,7 @@ static __device__ __forceinline__ void neoscrypt_chacha(uint16 *XV)
 	uint16 temp;
 
 	XV[0] = chacha_small_parallel_rnd(XV[0] ^ XV[3]);
-	temp  = chacha_small_parallel_rnd(XV[1] ^ XV[0]);
+	temp = chacha_small_parallel_rnd(XV[1] ^ XV[0]);
 	XV[1] = chacha_small_parallel_rnd(XV[2] ^ temp);
 	XV[3] = chacha_small_parallel_rnd(XV[3] ^ XV[1]);
 	XV[2] = temp;
@@ -775,7 +775,7 @@ static __device__ __forceinline__ void neoscrypt_salsa(uint16 *XV)
 	uint16 temp;
 
 	XV[0] = salsa_small_scalar_rnd(XV[0] ^ XV[3]);
-	temp  = salsa_small_scalar_rnd(XV[1] ^ XV[0]);
+	temp = salsa_small_scalar_rnd(XV[1] ^ XV[0]);
 	XV[1] = salsa_small_scalar_rnd(XV[2] ^ temp);
 	XV[3] = salsa_small_scalar_rnd(XV[3] ^ XV[1]);
 	XV[2] = temp;
@@ -852,6 +852,7 @@ static __forceinline__ __device__ void fastkdf256_v1(uint32_t thread, const uint
 	((uint32_t*)B)[19] = nonce;
 	((uint32_t*)B)[39] = nonce;
 	((uint32_t*)B)[59] = nonce;
+	__syncthreads();
 
 	((uint816*)input)[0] = ((uint816*)input_init)[0];
 	((uint48*)key)[0] = ((uint48*)key_init)[0];
@@ -883,10 +884,11 @@ static __forceinline__ __device__ void fastkdf256_v1(uint32_t thread, const uint
 			temp[k] = B[indice] ^ shifted[k];
 			B[indice] = temp[k];
 		}
+		__syncthreads();
 
 		uint32_t a = s_data[qbuf & 0x0000003f], b;
 		//#pragma unroll
-		for(int k = 0; k<16; k+=2)
+		for(int k = 0; k<16; k += 2)
 		{
 			b = s_data[(qbuf + k + 1) & 0x0000003f];
 			asm("shf.r.clamp.b32 %0, %1, %2, %3;" : "=r"(input[k]) : "r"(a), "r"(b), "r"(bitbuf));
@@ -951,6 +953,7 @@ static __forceinline__ __device__ void fastkdf32_v1(uint32_t thread, const  uint
 	((uint816*)input)[0] = ((uint816*)s_data)[0];
 	((uint48*)key)[0] = ((uint48*)salt)[0];
 	uint32_t qbuf, rbuf, bitbuf;
+	__syncthreads();
 
 #pragma nounroll  
 	for(int i = 0; i < 31; i++)
@@ -1008,6 +1011,7 @@ static __forceinline__ __device__ void fastkdf32_v1(uint32_t thread, const  uint
 		{
 			B0[(k + qbuf) & 0x0000003f] = temp[k];
 		}
+		__syncthreads();
 	}
 
 	Blake2S(input, input, key);
@@ -1051,6 +1055,7 @@ static __forceinline__ __device__ void fastkdf256_v2(uint32_t thread, const uint
 	B[19] = nonce;
 	B[39] = nonce;
 	B[59] = nonce;
+	__syncthreads();
 
 	((ulonglong4*)input)[0] = ((ulonglong4*)input_init)[0];
 	((uint28*)key)[0] = ((uint28*)key_init)[0];
@@ -1081,7 +1086,7 @@ static __forceinline__ __device__ void fastkdf256_v2(uint32_t thread, const uint
 		uint32_t a = s_data[qbuf & 0x0000003f], b;
 		//#pragma unroll
 
-		for(int k = 0; k<16; k+=2)
+		for(int k = 0; k<16; k += 2)
 		{
 			b = s_data[(qbuf + k + 1) & 0x0000003f];
 			asm("shf.r.clamp.b32 %0, %1, %2, %3;" : "=r"(input[k]) : "r"(a), "r"(b), "r"(bitbuf));
@@ -1111,6 +1116,7 @@ static __forceinline__ __device__ void fastkdf256_v2(uint32_t thread, const uint
 
 		for(int k = 0; k < 9; k++)
 			B[(k + qbuf) & 0x0000003f] = temp[k];
+		__syncthreads();
 	}
 
 	bufhelper = ((uchar4*)input)[0];
@@ -1158,6 +1164,7 @@ static __forceinline__ __device__ void fastkdf32_v3(uint32_t thread, const  uint
 	((uint816*)input)[0] = ((uint816*)s_data)[0];
 	((uint48*)key)[0] = ((uint48*)salt)[0];
 	uint32_t qbuf, rbuf, bitbuf;
+	__syncthreads();
 
 #pragma nounroll  
 	for(int i = 0; i < 31; i++)
@@ -1218,6 +1225,7 @@ static __forceinline__ __device__ void fastkdf32_v3(uint32_t thread, const  uint
 		{
 			B0[(k + qbuf) & 0x0000003f] = temp[k];
 		}
+		__syncthreads();
 	}
 
 	Blake2S_v2(input, input, key);
@@ -1262,6 +1270,8 @@ __global__ __launch_bounds__(TPB2, 1) void neoscrypt_gpu_hash_start(int stratum,
 
 	const uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
 	const uint32_t nonce = startNonce + thread;
+	if(thread >= threads)
+		return;
 
 	const uint32_t ZNonce = (stratum) ? cuda_swab32(nonce) : nonce; //freaking morons !!!
 
@@ -1278,6 +1288,8 @@ __global__ __launch_bounds__(TPB, 1) void neoscrypt_gpu_hash_chacha1_stream1(uin
 	uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
 	const int shift = SHIFT * 8 * thread;
 	const unsigned int shiftTr = 8 * thread;
+	if(thread >= threads)
+		return;
 
 	vectypeS __align__(16) X[8];
 	for(int i = 0; i<8; i++)
@@ -1301,6 +1313,8 @@ __global__ __launch_bounds__(TPB, 1) void neoscrypt_gpu_hash_chacha2_stream1(uin
 	const uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
 	const int shift = SHIFT * 8 * thread;
 	const int shiftTr = 8 * thread;
+	if(thread >= threads)
+		return;
 
 	vectypeS __align__(16) X[8];
 #pragma unroll
@@ -1326,6 +1340,8 @@ __global__ __launch_bounds__(TPB, 1) void neoscrypt_gpu_hash_salsa1_stream1(uint
 	const uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
 	const int shift = SHIFT * 8 * thread;
 	const int shiftTr = 8 * thread;
+	if(thread >= threads)
+		return;
 
 	vectypeS __align__(16) Z[8];
 #pragma unroll
@@ -1349,6 +1365,8 @@ __global__ __launch_bounds__(TPB, 1) void neoscrypt_gpu_hash_salsa2_stream1(uint
 	const uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
 	const int shift = SHIFT * 8 * thread;
 	const int shiftTr = 8 * thread;
+	if(thread >= threads)
+		return;
 
 	vectypeS __align__(16) X[8];
 #pragma unroll
@@ -1384,6 +1402,8 @@ __global__ __launch_bounds__(TPB2, 8) void neoscrypt_gpu_hash_ending(int stratum
 	__syncthreads();
 	const uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
 	const uint32_t nonce = startNonce + thread;
+	if(thread >= threads)
+		return;
 
 	const int shiftTr = 8 * thread;
 	vectypeS __align__(16) Z[8];
@@ -1421,27 +1441,27 @@ void neoscrypt_cpu_init_2stream(int thr_id, uint32_t threads)
 	CUDA_SAFE_CALL(cudaStreamCreate(&stream[1]));
 
 	CUDA_SAFE_CALL(cudaMalloc(&d_NNonce[thr_id], 2 * sizeof(uint32_t)));
-	CUDA_SAFE_CALL(cudaMalloc(&hash1, 32 * 128 * sizeof(uint64_t) * threads));
-	CUDA_SAFE_CALL(cudaMalloc(&hash2, 32 * 128 * sizeof(uint64_t) * threads));
-	CUDA_SAFE_CALL(cudaMalloc(&Trans1, 32 * sizeof(uint64_t) * threads));
-	CUDA_SAFE_CALL(cudaMalloc(&Trans2, 32 * sizeof(uint64_t) * threads));
-	CUDA_SAFE_CALL(cudaMalloc(&Trans3, 32 * sizeof(uint64_t) * threads));
-	CUDA_SAFE_CALL(cudaMalloc(&Bhash, 128 * sizeof(uint32_t) * threads));
+	CUDA_SAFE_CALL(cudaMalloc(&hash1, 32ULL * 128 * sizeof(uint64_t) * threads));
+	CUDA_SAFE_CALL(cudaMalloc(&hash2, 32ULL * 128 * sizeof(uint64_t) * threads));
+	CUDA_SAFE_CALL(cudaMalloc(&Trans1, 32ULL * sizeof(uint64_t) * threads));
+	CUDA_SAFE_CALL(cudaMalloc(&Trans2, 32ULL * sizeof(uint64_t) * threads));
+	CUDA_SAFE_CALL(cudaMalloc(&Trans3, 32ULL * sizeof(uint64_t) * threads));
+	CUDA_SAFE_CALL(cudaMalloc(&Bhash, 128ULL * sizeof(uint32_t) * threads));
 
-	CUDA_SAFE_CALL(cudaMemcpyToSymbolAsync(B2,    &Bhash,  sizeof(uint28*), 0, cudaMemcpyHostToDevice, stream[0]));
-	CUDA_SAFE_CALL(cudaMemcpyToSymbolAsync(W,     &hash1,  sizeof(uint28*), 0, cudaMemcpyHostToDevice, stream[0]));
-	CUDA_SAFE_CALL(cudaMemcpyToSymbolAsync(W2,    &hash2,  sizeof(uint28*), 0, cudaMemcpyHostToDevice, stream[0]));
-	CUDA_SAFE_CALL(cudaMemcpyToSymbolAsync(Tr,    &Trans1, sizeof(uint28*), 0, cudaMemcpyHostToDevice, stream[0]));
-	CUDA_SAFE_CALL(cudaMemcpyToSymbolAsync(Tr2,   &Trans2, sizeof(uint28*), 0, cudaMemcpyHostToDevice, stream[0]));
+	CUDA_SAFE_CALL(cudaMemcpyToSymbolAsync(B2, &Bhash, sizeof(uint28*), 0, cudaMemcpyHostToDevice, stream[0]));
+	CUDA_SAFE_CALL(cudaMemcpyToSymbolAsync(W, &hash1, sizeof(uint28*), 0, cudaMemcpyHostToDevice, stream[0]));
+	CUDA_SAFE_CALL(cudaMemcpyToSymbolAsync(W2, &hash2, sizeof(uint28*), 0, cudaMemcpyHostToDevice, stream[0]));
+	CUDA_SAFE_CALL(cudaMemcpyToSymbolAsync(Tr, &Trans1, sizeof(uint28*), 0, cudaMemcpyHostToDevice, stream[0]));
+	CUDA_SAFE_CALL(cudaMemcpyToSymbolAsync(Tr2, &Trans2, sizeof(uint28*), 0, cudaMemcpyHostToDevice, stream[0]));
 	CUDA_SAFE_CALL(cudaMemcpyToSymbolAsync(Input, &Trans3, sizeof(uint28*), 0, cudaMemcpyHostToDevice, stream[0]));
+	if(opt_debug)
+		CUDA_SAFE_CALL(cudaDeviceSynchronize());
 }
 
 __host__ void neoscrypt_cpu_hash_k4_2stream(bool stratum, int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *result)
 {
-	CUDA_SAFE_CALL(cudaMemsetAsync(d_NNonce[thr_id], 0xff, 2 * sizeof(uint32_t), stream[1]));
-	
 	const uint32_t threadsperblock = TPB;
-	
+
 	dim3 grid((threads + threadsperblock - 1) / threadsperblock);
 	dim3 block(threadsperblock);
 
@@ -1454,9 +1474,15 @@ __host__ void neoscrypt_cpu_hash_k4_2stream(bool stratum, int thr_id, uint32_t t
 	CUDA_SAFE_CALL(cudaStreamSynchronize(stream[0]));
 
 	neoscrypt_gpu_hash_salsa1_stream1 << <grid, block, 0, stream[0] >> >(threads, startNounce); //chacha
+	if(opt_debug)
+		CUDA_SAFE_CALL(cudaDeviceSynchronize());
 	neoscrypt_gpu_hash_chacha1_stream1 << <grid, block, 0, stream[1] >> >(threads, startNounce); //salsa
+	if(opt_debug)
+		CUDA_SAFE_CALL(cudaDeviceSynchronize());
 
 	neoscrypt_gpu_hash_salsa2_stream1 << <grid, block, 0, stream[0] >> >(threads, startNounce); //chacha
+	if(opt_debug)
+		CUDA_SAFE_CALL(cudaDeviceSynchronize());
 	neoscrypt_gpu_hash_chacha2_stream1 << <grid, block, 0, stream[1] >> >(threads, startNounce); //salsa
 
 	CUDA_SAFE_CALL(cudaDeviceSynchronize());
@@ -1466,14 +1492,14 @@ __host__ void neoscrypt_cpu_hash_k4_2stream(bool stratum, int thr_id, uint32_t t
 	CUDA_SAFE_CALL(cudaMemcpy(result, d_NNonce[thr_id], 2 * sizeof(uint32_t), cudaMemcpyDeviceToHost));
 }
 
-__host__ void neoscrypt_setBlockTarget(uint32_t* pdata, const void *target)
+__host__ void neoscrypt_setBlockTarget(int thr_id, uint32_t* pdata, const void *target)
 {
 	uint32_t PaddedMessage[64];
 	uint32_t input[16], key[16] = {0};
 
 	for(int i = 0; i < 19; i++)
 	{
-		PaddedMessage[i     ] = pdata[i];
+		PaddedMessage[i] = pdata[i];
 		PaddedMessage[i + 20] = pdata[i];
 		PaddedMessage[i + 40] = pdata[i];
 	}
@@ -1484,15 +1510,35 @@ __host__ void neoscrypt_setBlockTarget(uint32_t* pdata, const void *target)
 	PaddedMessage[39] = 0;
 	PaddedMessage[59] = 0;
 
-	((uint16*)input)[0] = ((uint16*)pdata)[0];
-	((uint8*)key)[0] = ((uint8*)pdata)[0];
+	for(int i = 0; i < 16; i++)
+		input[i] = pdata[i];
+	for(int i = 0; i < 8; i++)
+		key[i] = pdata[i];
 
 	Blake2Shost(input, key);
 
 	cudaMemcpyToSymbolAsync(pTarget, target, 8 * sizeof(uint32_t), 0, cudaMemcpyHostToDevice, stream[1]);
 	cudaMemcpyToSymbolAsync(input_init, input, 16 * sizeof(uint32_t), 0, cudaMemcpyHostToDevice, stream[0]);
 	cudaMemcpyToSymbolAsync(key_init, key, 16 * sizeof(uint32_t), 0, cudaMemcpyHostToDevice, stream[1]);
-
 	cudaMemcpyToSymbolAsync(c_data, PaddedMessage, 64 * sizeof(uint32_t), 0, cudaMemcpyHostToDevice, stream[0]);
-	CUDA_SAFE_CALL(cudaGetLastError());
+
+	CUDA_SAFE_CALL(cudaMemsetAsync(d_NNonce[thr_id], 0xff, 2 * sizeof(uint32_t), stream[1]));
+	if(opt_debug)
+		CUDA_SAFE_CALL(cudaDeviceSynchronize());
+}
+
+__global__ void get_cuda_arch_neo_gpu(int *d_version)
+{
+#ifdef __CUDA_ARCH__
+	*d_version = __CUDA_ARCH__;
+#endif
+}
+
+__host__ void get_cuda_arch_neo(int *version)
+{
+	int *d_version;
+	cudaMalloc(&d_version, sizeof(int));
+	get_cuda_arch_neo_gpu << < 1, 1 >> > (d_version);
+	cudaMemcpy(version, d_version, sizeof(int), cudaMemcpyDeviceToHost);
+	cudaFree(d_version);
 }

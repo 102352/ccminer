@@ -44,10 +44,6 @@ extern "C"{
 #define SPH_SMALL_FOOTPRINT_SIMD   1
 #endif
 
-#ifdef _MSC_VER
-#pragma warning (disable: 4146)
-#endif
-
 typedef sph_u32 u32;
 typedef sph_s32 s32;
 #define C32     SPH_C32
@@ -90,8 +86,8 @@ static const s32 alpha_tab[] = {
  *   REDS1: from -32768..98302 to -383..383
  *   REDS2: from -2^31..2^31-1 to -32768..98302
  */
-#define REDS1(x)    (((x) & 0xFF) - ((x) >> 8))
-#define REDS2(x)    (((x) & 0xFFFF) + ((x) >> 16))
+#define REDS1(x)    (((x) & 0xFF) - ((x)>=0? ((x) / 256) : ((x) / 256 - 1)))
+#define REDS2(x)    (((x) & 0xFFFF) + ((x)>=0? ((x) / 65536) : ((x) / 65536 - 1)))
 
 /*
  * If, upon entry, the values of q[] are all in the -N..N range (where

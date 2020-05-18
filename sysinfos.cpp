@@ -39,19 +39,27 @@ static double linux_cputemp(int core)
 	return tc;
 }
 
-#define CPUFREQ_PATH \
- "/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_cur_freq"
 static uint32_t linux_cpufreq(int core)
 {
-	FILE *fd = fopen(CPUFREQ_PATH, "r");
 	uint32_t freq = 0;
+	FILE *fd;
 
-	if (!fd)
-		return freq;
+	fd = fopen("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_cur_freq", "r");
+	if(fd != NULL)
+	{
+		fscanf(fd, "%d", &freq);
+		fclose(fd);
+	}
+	else // sometimes we don't have read permission for cpuinfo_cur_freq
+	{
+		fd = fopen("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "r");
+		if(fd != NULL)
+		{
+			fscanf(fd, "%d", &freq);
+			fclose(fd);
+		}
 
-	if (!fscanf(fd, "%d", &freq))
-		return freq;
-
+	}
 	return freq;
 }
 

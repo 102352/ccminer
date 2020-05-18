@@ -22,7 +22,7 @@ extern "C" {
 #define TPB 192
 
 /* hash by cpu with blake 256 */
-extern "C" void pentablakehash(void *output, const void *input)
+void pentablakehash(void *output, const void *input)
 {
 	unsigned char hash[128];
 	#define hashB hash + 64
@@ -453,9 +453,12 @@ extern int scanhash_pentablake(int thr_id, uint32_t *pdata, uint32_t *ptarget,
 
 	if (!init[thr_id]) 
 	{
+		if(throughputmax == 128U * 2560)
+			applog(LOG_INFO, "GPU #%d: using default intensity %.3f", device_map[thr_id], throughput2intensity(throughputmax));
 		CUDA_SAFE_CALL(cudaSetDevice(device_map[thr_id]));
-		cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
-		cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
+		CUDA_SAFE_CALL(cudaDeviceReset());
+		CUDA_SAFE_CALL(cudaSetDeviceFlags(cudaschedule));
+		CUDA_SAFE_CALL(cudaDeviceSetCacheConfig(cudaFuncCachePreferL1));
 		CUDA_SAFE_CALL(cudaStreamCreate(&gpustream[thr_id]));
 #if defined WIN32 && !defined _WIN64
 		// 2GB limit for cudaMalloc
@@ -464,12 +467,13 @@ extern int scanhash_pentablake(int thr_id, uint32_t *pdata, uint32_t *ptarget,
 			applog(LOG_ERR, "intensity too high");
 			mining_has_stopped[thr_id] = true;
 			cudaStreamDestroy(gpustream[thr_id]);
-			proper_exit(2);
+			proper_exit(EXIT_FAILURE);
 		}
 #endif
-		CUDA_SAFE_CALL(cudaMalloc(&d_hash, 64 * throughputmax));
+		CUDA_SAFE_CALL(cudaMalloc(&d_hash, 64ULL * throughputmax));
 		CUDA_SAFE_CALL(cudaMallocHost(&h_resNounce[thr_id], 2*sizeof(uint32_t)));
 		CUDA_SAFE_CALL(cudaMalloc(&d_resNounce[thr_id], 2*sizeof(uint32_t)));
+		mining_has_stopped[thr_id] = false;
 
 		init[thr_id] = true;
 	}

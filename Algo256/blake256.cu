@@ -23,7 +23,7 @@ extern "C" {
 extern "C" int blake256_rounds = 14;
 
 /* hash by cpu with blake 256 */
-extern "C" void blake256hash(void *output, const void *input, int8_t rounds = 14)
+void blake256hash(void *output, const void *input, int8_t rounds = 14)
 {
 	uchar hash[64];
 	sph_blake256_context ctx;
@@ -693,8 +693,8 @@ extern int scanhash_blake256(int thr_id, uint32_t *pdata, uint32_t *ptarget,
 	uint32_t crcsum;
 #endif
 	unsigned int intensity = 28;
-	uint32_t throughput = device_intensity(device_map[thr_id], __func__, 1U << intensity);
-	throughput = min(throughput, max_nonce - first_nonce) & 0xfffffc00;
+	uint32_t throughputmax = device_intensity(device_map[thr_id], __func__, 1U << intensity);
+	uint32_t throughput = min(throughputmax, max_nonce - first_nonce) & 0xfffffc00;
 
 	int rc = 0;
 
@@ -717,13 +717,17 @@ extern int scanhash_blake256(int thr_id, uint32_t *pdata, uint32_t *ptarget,
 	static THREAD volatile bool init = false;
 	if(!init)
 	{
+		if(throughputmax == intensity)
+			applog(LOG_INFO, "GPU #%d: using default intensity %.3f", device_map[thr_id], throughput2intensity(throughputmax));
 		CUDA_SAFE_CALL(cudaSetDevice(device_map[thr_id]));
-		cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
-		cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
+		CUDA_SAFE_CALL(cudaDeviceReset());
+		CUDA_SAFE_CALL(cudaSetDeviceFlags(cudaschedule));
+		CUDA_SAFE_CALL(cudaDeviceSetCacheConfig(cudaFuncCachePreferL1));
 		CUDA_SAFE_CALL(cudaStreamCreate(&gpustream[thr_id]));
 		CUDA_SAFE_CALL(cudaMallocHost(&h_data, 15 * sizeof(uint32_t)));
 		CUDA_SAFE_CALL(cudaMallocHost(&h_resNonce, NBN * sizeof(uint32_t)));
 		CUDA_SAFE_CALL(cudaMalloc(&d_resNonce[thr_id], NBN * sizeof(uint32_t)));
+		mining_has_stopped[thr_id] = false;
 		init = true;
 	}
 
@@ -761,7 +765,7 @@ extern int scanhash_blake256(int thr_id, uint32_t *pdata, uint32_t *ptarget,
 			//applog(LOG_BLUE, "%08x %16llx", vhashcpu[6], targetHigh);
 			if (vhashcpu[7] <= target7 && fulltest(vhashcpu, ptarget))
 			{
-				if (opt_benchmark) applog(LOG_INFO, "GPU #%d Found nounce %08x", thr_id, foundNonce);
+				if (opt_benchmark) applog(LOG_INFO, "GPU #%d Found nounce %08x", device_map[thr_id], foundNonce);
 				rc = 1;
 				*hashes_done = pdata[19] - first_nonce + throughput;
 				pdata[19] = foundNonce;
@@ -776,7 +780,7 @@ extern int scanhash_blake256(int thr_id, uint32_t *pdata, uint32_t *ptarget,
 					if (vhashcpu[7] <= target7 && fulltest(vhashcpu, ptarget))
 					{
 						pdata[21] = extra_results[thr_id][0];
-						if(opt_benchmark) applog(LOG_INFO, "GPU #%d Found second nounce %08x", thr_id, extra_results[thr_id][0]);
+						if(opt_benchmark) applog(LOG_INFO, "GPU #%d Found second nounce %08x", device_map[thr_id], extra_results[thr_id][0]);
 //						applog(LOG_BLUE, "1:%x 2:%x", foundNonce, extra_results[thr_id][0]);
 						rc = 2;
 					}

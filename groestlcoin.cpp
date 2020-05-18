@@ -7,7 +7,6 @@
 #endif
 #include <openssl/sha.h>
 
-#include "uint256.h"
 #include "sph/sph_groestl.h"
 #include "cuda_groestlcoin.h"
 
@@ -21,16 +20,16 @@ extern volatile bool mining_has_stopped[MAX_GPUS];
 do {                                                                  \
 	cudaError_t err = call;                                           \
 	if (cudaSuccess != err) {                                         \
-		fprintf(stderr, "Cuda error in func '%s' at line %i : %s.\n", \
+		fprintf(stdout, "Cuda error in func '%s' at line %i : %s.\n", \
 		         __FUNCTION__, __LINE__, cudaGetErrorString(err) );   \
-		exit(EXIT_FAILURE);                                           \
+		proper_exit(EXIT_FAILURE);                                           \
 		}                                                                 \
 } while (0)
 
 #define SWAP32(x) swab32(x)
 
 // CPU-groestl
-extern "C" void groestlhash(void *state, const void *input)
+void groestlhash(void *state, const void *input)
 {
     sph_groestl512_context ctx_groestl;
 
@@ -67,13 +66,17 @@ extern int scanhash_groestlcoin(int thr_id, uint32_t *pdata, uint32_t *ptarget,
 	static THREAD volatile bool init = false;
 	if(!init)
     {
+		if(throughputmax == intensity)
+			applog(LOG_INFO, "GPU #%d: using default intensity %.3f", device_map[thr_id], throughput2intensity(throughputmax));
 		CUDA_SAFE_CALL(cudaSetDevice(device_map[thr_id]));
-		cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
-		cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
+		CUDA_SAFE_CALL(cudaDeviceReset());
+		CUDA_SAFE_CALL(cudaSetDeviceFlags(cudaschedule));
+		CUDA_SAFE_CALL(cudaDeviceSetCacheConfig(cudaFuncCachePreferL1));
 		CUDA_SAFE_CALL(cudaStreamCreate(&gpustream[thr_id]));
 
 		groestlcoin_cpu_init(thr_id, throughputmax);
 		CUDA_SAFE_CALL(cudaMallocHost(&foundNounce, 2 * 4));
+		mining_has_stopped[thr_id] = false;
 		init = true;
     }
 
@@ -141,7 +144,7 @@ extern int scanhash_groestlcoin(int thr_id, uint32_t *pdata, uint32_t *ptarget,
 		if(err != cudaSuccess)
 		{
 			applog(LOG_ERR, "GPU #%d: %s", device_map[thr_id], cudaGetErrorString(err));
-			exit(EXIT_FAILURE);
+			proper_exit(EXIT_FAILURE);
 		}
 	} while(!work_restart[thr_id].restart && ((uint64_t)max_nonce > ((uint64_t)(pdata[19]) + (uint64_t)throughput)));
 

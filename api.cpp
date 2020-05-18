@@ -95,13 +95,15 @@ extern uint32_t rejected_count;
 extern int num_cpus;
 extern struct stratum_ctx stratum;
 extern char* rpc_user;
-
+extern bool stop_mining;
+extern uint32_t device_plimit[MAX_GPUS];
 // sysinfos.cpp
 extern float cpu_temp(int);
 extern uint32_t cpu_clock(int);
 // cuda.cpp
 int cuda_num_devices();
 int cuda_gpu_clocks(struct cgpu_info *gpu);
+int cuda_gpu_info(struct cgpu_info *gpu);
 
 char driver_version[32] = { 0 };
 
@@ -109,40 +111,55 @@ char driver_version[32] = { 0 };
 
 static void gpustatus(int thr_id)
 {
-	if (thr_id >= 0 && thr_id < opt_n_threads) {
+	if(thr_id >= 0 && thr_id < opt_n_threads)
+	{
 		struct cgpu_info *cgpu = &thr_info[thr_id].gpu;
+		double khashes_per_watt = 0;
 		int gpuid = cgpu->gpu_id;
 		char buf[512]; *buf = '\0';
 		char* card;
+
+		cuda_gpu_info(cgpu);
+		cgpu->gpu_plimit = device_plimit[cgpu->gpu_id];
 
 #ifdef USE_WRAPNVML
 		cgpu->has_monitoring = true;
 		cgpu->gpu_bus = gpu_busid(cgpu);
 		cgpu->gpu_temp = gpu_temp(cgpu);
-		cgpu->gpu_fan = (uint16_t) gpu_fanpercent(cgpu);
-		cgpu->gpu_fan_rpm = (uint16_t) gpu_fanrpm(cgpu);
-		cgpu->gpu_power = gpu_power(cgpu); 
+		cgpu->gpu_fan = (uint16_t)gpu_fanpercent(cgpu);
+		cgpu->gpu_fan_rpm = (uint16_t)gpu_fanrpm(cgpu);
+		cgpu->gpu_power = gpu_power(cgpu); // mWatts
+		cgpu->gpu_plimit = gpu_plimit(cgpu); // mW or %
 #endif
-		cuda_gpu_clocks(cgpu);
-
-		// todo: per gpu
-		cgpu->accepted = accepted_count;
-		cgpu->rejected = rejected_count;
-
-		cgpu->khashes = stats_get_speed(cgpu->gpu_id, 0.0) / 1000.0;
+		cgpu->khashes = stats_get_speed(thr_id, 0.0) / 1000.0;
+		if(cgpu->monitor.gpu_power)
+		{
+			cgpu->gpu_power = cgpu->monitor.gpu_power;
+			khashes_per_watt = (double)cgpu->khashes / cgpu->monitor.gpu_power;
+			khashes_per_watt *= 1000; // power in mW
+									  //gpulog(LOG_BLUE, thr_id, "KHW: %g", khashes_per_watt);
+		}
 
 		card = device_name[gpuid];
 
-		snprintf(buf, sizeof(buf), "GPU=%d;BUS=%hd;CARD=%s;"
-			"TEMP=%.1f;FAN=%hu;RPM=%hu;FREQ=%d;KHS=%.2f;HWF=%d;I=%.1f;THR=%u|",
-			gpuid, cgpu->gpu_bus, card, cgpu->gpu_temp, cgpu->gpu_fan,
-			cgpu->gpu_fan_rpm, cgpu->gpu_clock, cgpu->khashes,
-			cgpu->hw_errors, cgpu->intensity, cgpu->throughput);
+		snprintf(buf, sizeof(buf), "GPU=%d;BUS=%hd;CARD=%s;TEMP=%.1f;"
+				 "POWER=%u;FAN=%hu;RPM=%hu;"
+				 "FREQ=%u;MEMFREQ=%u;GPUF=%u;MEMF=%u;"
+				 "KHS=%.2f;KHW=%.5f;PLIM=%u;"
+				 "ACC=%u;REJ=%u;HWF=%u;I=%.1f;THR=%u|",
+				 gpuid, cgpu->gpu_bus, card, cgpu->gpu_temp,
+				 cgpu->gpu_power, cgpu->gpu_fan, cgpu->gpu_fan_rpm,
+				 cgpu->gpu_clock / 1000, cgpu->gpu_memclock / 1000, // base freqs in MHz
+				 cgpu->monitor.gpu_clock, cgpu->monitor.gpu_memclock, // current
+				 cgpu->khashes, khashes_per_watt, cgpu->gpu_plimit,
+				 cgpu->accepted, (unsigned)cgpu->rejected, (unsigned)cgpu->hw_errors,
+				 cgpu->intensity, cgpu->throughput);
 
 		// append to buffer for multi gpus
 		strcat(buffer, buf);
 	}
 }
+
 
 /**
 * Returns gpu/thread specific stats
@@ -238,6 +255,8 @@ static void gpuhwinfos(int gpu_id)
 	cgpu->gpu_fan = (uint16_t) gpu_fanpercent(cgpu);
 	cgpu->gpu_fan_rpm = (uint16_t) gpu_fanrpm(cgpu);
 	cgpu->gpu_pstate = gpu_pstate(cgpu);
+	cgpu->gpu_power = gpu_power(cgpu);
+	cgpu->gpu_plimit = gpu_plimit(cgpu);
 	gpu_info(cgpu);
 #endif
 
@@ -249,14 +268,17 @@ static void gpuhwinfos(int gpu_id)
 
 	card = device_name[gpu_id];
 
-	snprintf(buf, sizeof(buf), "GPU=%d;BUS=%hd;CARD=%s;SM=%u;MEM=%lu;"
-		"TEMP=%.1f;FAN=%hu;RPM=%hu;FREQ=%d;MEMFREQ=%d;PST=%s;"
-		"VID=%hx;PID=%hx;NVML=%d;NVAPI=%d;SN=%s;BIOS=%s|",
-		gpu_id, cgpu->gpu_bus, card, cgpu->gpu_arch, cgpu->gpu_mem,
-		cgpu->gpu_temp, cgpu->gpu_fan, cgpu->gpu_fan_rpm,
-		cgpu->gpu_clock, cgpu->gpu_memclock,
-		pstate, cgpu->gpu_vid, cgpu->gpu_pid, cgpu->nvml_id, cgpu->nvapi_id,
-		cgpu->gpu_sn, cgpu->gpu_desc);
+	snprintf(buf, sizeof(buf), "GPU=%d;BUS=%hd;CARD=%s;SM=%hu;MEM=%u;"
+			 "TEMP=%.1f;FAN=%hu;RPM=%hu;FREQ=%u;MEMFREQ=%u;GPUF=%u;MEMF=%u;"
+			 "PST=%s;POWER=%u;PLIM=%u;"
+			 "VID=%hx;PID=%hx;NVML=%d;NVAPI=%d;SN=%s;BIOS=%s|",
+			 gpu_id, cgpu->gpu_bus, card, cgpu->gpu_arch, (uint32_t)cgpu->gpu_mem,
+			 cgpu->gpu_temp, cgpu->gpu_fan, cgpu->gpu_fan_rpm,
+			 cgpu->gpu_clock / 1000U, cgpu->gpu_memclock / 1000U, // base clocks
+			 cgpu->monitor.gpu_clock, cgpu->monitor.gpu_memclock, // current
+			 pstate, cgpu->gpu_power, cgpu->gpu_plimit,
+			 cgpu->gpu_vid, cgpu->gpu_pid, cgpu->nvml_id, cgpu->nvapi_id,
+			 cgpu->gpu_sn, cgpu->gpu_desc);
 
 	strcat(buffer, buf);
 }
@@ -270,12 +292,7 @@ static const char* os_name()
 #ifdef WIN32
 	return "windows";
 #else
-	FILE *fd = fopen("/proc/version", "r");
-	if (!fd || !fscanf(fd, "Linux version %48s", &os_version[6]))
 		return "linux";
-	fclose(fd);
-	os_version[48] = '\0';
-	return (const char*) os_version;
 #endif
 }
 
@@ -362,7 +379,7 @@ static char *getmeminfo(char *params)
 	totmem = smem + hmem;
 
 	*buffer = '\0';
-	sprintf(buffer, "STATS=%u;HASHLOG=%u;MEM=%lu|",
+	sprintf(buffer, "STATS=%u;HASHLOG=%u;MEM=%llu|",
 		srec, hrec, totmem);
 
 	return buffer;
@@ -406,7 +423,7 @@ static int send_result(SOCKETTYPE c, char *result)
 		n = send(c, "", 1, 0);
 	} else {
 		// ignore failure - it's closed immediately anyway
-		n = send(c, result, strlen(result) + 1, 0);
+		n = send(c, result, (int)strlen(result) + 1, 0);
 	}
 	return n;
 }
@@ -426,8 +443,10 @@ static size_t base64_encode(const uchar *indata, size_t insize, char *outptr, si
 	memset(outptr, 0, outlen);
 
 	outbuf = output = (char*)calloc(1, inlen * 4 / 3 + 4);
-	if (outbuf == NULL) {
-		return -1;
+	if(outbuf == NULL)
+	{
+		applog(LOG_ERR, "Out of memory!");
+		proper_exit(EXIT_FAILURE);
 	}
 
 	while (inlen > 0) {
@@ -539,8 +558,11 @@ static int websocket_handshake(SOCKETTYPE c, char *result, char *clientkey)
 
 	size_t handlen = strlen(answer);
 	uchar *data = (uchar*) calloc(1, handlen + frames + (size_t) datalen + 1);
-	if (data == NULL)
-		return -1;
+	if(data == NULL)
+	{
+		applog(LOG_ERR, "Out of memory!");
+		proper_exit(EXIT_FAILURE);
+	}
 	else {
 		uchar *p = data;
 		// HTTP header 101
@@ -549,7 +571,8 @@ static int websocket_handshake(SOCKETTYPE c, char *result, char *clientkey)
 		// WebSocket Frame - Header + Data
 		memcpy(p, hd, frames);
 		memcpy(p + frames, result, (size_t)datalen);
-		send(c, (const char*)data, strlen(answer) + frames + (size_t)datalen + 1, 0);
+		if(SOCKETFAIL(send(c, (const char*)data, (int)strlen(answer) + frames + (int)datalen + 1, 0)) && (opt_debug || opt_protocol))
+			applog(LOG_WARNING, "API: failed to send %d bytes", (int)strlen(answer) + frames + (int)datalen + 1);
 		free(data);
 	}
 	return 0;
@@ -565,8 +588,11 @@ static void setup_ipaccess()
 	char group;
 
 	buf = (char*) calloc(1, strlen(opt_api_allow) + 1);
-	if (unlikely(!buf))
-		proper_exit(1);//, "Failed to malloc ipaccess buf");
+	if(buf == NULL)
+	{
+		applog(LOG_ERR, "Out of memory!");
+		proper_exit(EXIT_FAILURE);
+	}
 
 	strcpy(buf, opt_api_allow);
 	ipcount = 1;
@@ -576,8 +602,11 @@ static void setup_ipaccess()
 
 	// possibly more than needed, but never less
 	ipaccess = (struct IP4ACCESS *) calloc(ipcount, sizeof(struct IP4ACCESS));
-	if (unlikely(!ipaccess))
-		proper_exit(1);//, "Failed to calloc ipaccess");
+	if(ipaccess == NULL)
+	{
+		applog(LOG_ERR, "Out of memory!");
+		proper_exit(EXIT_FAILURE);
+	}
 
 	ips = 0;
 	ptr = buf;
@@ -678,7 +707,8 @@ static void api()
 	const char *addr = opt_api_allow;
 	uint16_t port = opt_api_listen; // 4068
 	char buf[MYBUFSIZ];
-	int c, n, bound;
+	SOCKETTYPE c;
+	int n, bound;
 	char *connectaddr = nullptr;
 	char *binderror = nullptr;
 	char group;
@@ -693,7 +723,7 @@ static void api()
 	int i;
 
 	SOCKETTYPE *apisock = nullptr;
-	if (!opt_api_listen && opt_debug) {
+	if (!opt_api_listen) {
 		applog(LOG_DEBUG, "API disabled");
 		return;
 	}
@@ -706,6 +736,11 @@ static void api()
 	}
 
 	apisock = (SOCKETTYPE*) calloc(1, sizeof(*apisock));
+	if(apisock == NULL)
+	{
+		applog(LOG_ERR, "Out of memory!");
+		proper_exit(EXIT_FAILURE);
+	}
 	*apisock = INVSOCK;
 
 	sleep(1);
@@ -713,6 +748,7 @@ static void api()
 	*apisock = socket(AF_INET, SOCK_STREAM, 0);
 	if (*apisock == INVSOCK) {
 		applog(LOG_ERR, "API initialisation failed (%s)%s", strerror(errno), UNAVAILABLE);
+		free(apisock);
 		return;
 	}
 
@@ -721,6 +757,7 @@ static void api()
 	serv.sin_addr.s_addr = inet_addr(addr);
 	if (serv.sin_addr.s_addr == (in_addr_t)INVINETADDR) {
 		applog(LOG_ERR, "API initialisation 2 failed (%s)%s", strerror(errno), UNAVAILABLE);
+		free(apisock);
 		return;
 	}
 
@@ -743,33 +780,24 @@ static void api()
 	// try for 1 minute ... in case the old one hasn't completely gone yet
 	bound = 0;
 	bindstart = time(NULL);
-	while (bound == 0) {
-		if (bind(*apisock, (struct sockaddr *)(&serv), sizeof(serv)) < 0) {
+	while(bound == 0)
+	{
+		if(bind(*apisock, (struct sockaddr *)(&serv), sizeof(serv)) < 0)
+		{
 			binderror = strerror(errno);
-			if ((time(NULL) - bindstart) > 61)
+			if((time(NULL) - bindstart) > 61)
 				break;
-			else if (opt_api_listen == 4068) {
-				/* when port is default one, use first available */
-				if (opt_debug)
-					applog(LOG_DEBUG, "API bind to port %d failed, trying port %u",
-						port, (uint32_t) port+1);
-				port++;
-				serv.sin_port = htons(port);
-				sleep(1);
-			} else {
-				if (!opt_quiet || opt_debug)
+			else
+			{
+				if(!opt_quiet || opt_debug || opt_protocol)
 					applog(LOG_WARNING, "API bind to port %u failed - trying again in 20sec",
-						(uint32_t) port);
+					(uint32_t)port);
 				sleep(20);
 			}
 		}
-		else {
+		else
+		{
 			bound = 1;
-			if (opt_api_listen != port) {
-				applog(LOG_WARNING, "API bind to port %d failed - using port %u",
-					opt_api_listen, (uint32_t) port);
-				opt_api_listen = port;
-			}
 		}
 	}
 
@@ -787,6 +815,11 @@ static void api()
 	}
 
 	buffer = (char *) calloc(1, MYBUFSIZ + 1);
+	if(buffer == NULL)
+	{
+		applog(LOG_ERR, "Out of memory!");
+		proper_exit(EXIT_FAILURE);
+	}
 
 	counter = 0;
 	while (bye == 0) {
@@ -794,8 +827,10 @@ static void api()
 
 		clisiz = sizeof(cli);
 		c = accept(*apisock, (struct sockaddr*) (&cli), &clisiz);
-		if (SOCKETFAIL(c)) {
-			applog(LOG_ERR, "API failed (%s)%s", strerror(errno), UNAVAILABLE);
+		if(SOCKETFAIL(c))
+		{
+			if(!stop_mining)
+				applog(LOG_ERR, "API failed (%s)%s", strerror(errno), UNAVAILABLE);
 			CLOSESOCKET(*apisock);
 			free(apisock);
 			free(buffer);
@@ -803,7 +838,7 @@ static void api()
 		}
 
 		addrok = check_connect(&cli, &connectaddr, &group);
-		if (opt_debug && opt_protocol)
+		if (opt_debug || opt_protocol)
 			applog(LOG_DEBUG, "API: connection from %s - %s",
 				connectaddr, addrok ? "Accepted" : "Ignored");
 
@@ -812,7 +847,7 @@ static void api()
 			char *wskey = NULL;
 			n = recv(c, &buf[0], SOCK_REC_BUFSZ, 0);
 
-			fail = SOCKETFAIL(n);
+			fail = SOCKETFAIL(n) || n == 0;
 			if (fail)
 				buf[0] = '\0';
 			else if (n > 0 && buf[n-1] == '\n') {
@@ -821,7 +856,7 @@ static void api()
 				if (n > 0 && buf[n-1] == '\r')
 					buf[n-1] = '\0';
 			}
-			buf[n] = '\0';
+			else buf[n] = '\0';
 
 			//if (opt_debug && opt_protocol && n > 0)
 			//	applog(LOG_DEBUG, "API: recv command: (%d) '%s'+char(%x)", n, buf, buf[n-1]);
@@ -853,7 +888,7 @@ static void api()
 				if (params != NULL)
 					*(params++) = '\0';
 
-				if (opt_debug && opt_protocol && n > 0)
+				if ((opt_debug || opt_protocol) && n > 0)
 					applog(LOG_DEBUG, "API: exec command %s(%s)", buf, params ? params : "");
 
 				for (i = 0; i < CMDMAX; i++) {
@@ -890,20 +925,22 @@ void *api_thread(void *userdata)
 	return NULL;
 }
 
+extern enum sha_algos opt_algo;
+static uint32_t algo_throughput[MAX_GPUS][64] = {0};
+void bench_set_throughput(int thr_id, uint32_t throughput)
+{
+	algo_throughput[thr_id][opt_algo] = throughput;
+}
 /* to be able to report the default value set in each algo */
 void api_set_throughput(int thr_id, uint32_t throughput)
 {
-	struct cgpu_info *cgpu = &thr_info[thr_id].gpu;
-	if (cgpu) {
-		uint32_t ws = throughput;
-		uint8_t i = 0;
-		cgpu->throughput = throughput;
-		while (ws > 1 && i++ < 32)
-			ws = ws >> 1;
-		cgpu->intensity_int = i;
-		cgpu->intensity = (float) i;
-		if (i && (1U << i) < throughput) {
-			cgpu->intensity += ((float) (throughput-(1U << i)) / (1U << i));
-		}
+	if(thr_id < MAX_GPUS && thr_info)
+	{
+		struct cgpu_info *cgpu = &thr_info[thr_id].gpu;
+		cgpu->intensity = throughput2intensity(throughput);
+		if(cgpu->throughput != throughput) cgpu->throughput = throughput;
 	}
+	// to display in bench results
+	if(opt_benchmark)
+		bench_set_throughput(thr_id, throughput);
 }

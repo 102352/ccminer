@@ -102,7 +102,7 @@ __global__
 void x17_haval256_gpu_hash_64(uint32_t threads, uint32_t startNounce, const uint64_t *const __restrict__ g_hash, uint32_t target, uint32_t *const __restrict__ ret)
 {
 	const uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
-//	if (thread < threads)
+	if (thread < threads)
 	{
 		uint32_t *inpHash = (uint32_t*)&g_hash[8 * thread];
 		uint32_t hash[16];
@@ -336,10 +336,10 @@ void x17_haval256_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce
 
 	dim3 grid((threads + threadsperblock-1)/threadsperblock);
 	dim3 block(threadsperblock);
-	cudaMemsetAsync(d_nonce[thr_id], 0xff, 2 * sizeof(uint32_t), gpustream[thr_id]);
+	CUDA_SAFE_CALL(cudaMemsetAsync(d_nonce[thr_id], 0xff, 2 * sizeof(uint32_t), gpustream[thr_id]));
 
 	x17_haval256_gpu_hash_64 <<<grid, block, 0, gpustream[thr_id] >>>(threads, startNounce, (uint64_t*)d_hash, target, d_nonce[thr_id]);
-	cudaMemcpyAsync(result, d_nonce[thr_id], 2 * sizeof(uint32_t), cudaMemcpyDeviceToHost, gpustream[thr_id]);
+	CUDA_SAFE_CALL(cudaMemcpyAsync(result, d_nonce[thr_id], 2 * sizeof(uint32_t), cudaMemcpyDeviceToHost, gpustream[thr_id]));
 	CUDA_SAFE_CALL(cudaStreamSynchronize(gpustream[thr_id]));
 
 }

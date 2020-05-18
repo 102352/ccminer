@@ -319,7 +319,7 @@ __constant__  __align__(64) uint64_t  mixTob1Tox[256] = {
 	SPH_C64(0x50885D28A0282875), SPH_C64(0xB831DA5C6D5C5C86),
 	SPH_C64(0xED3F93F8C7F8F86B), SPH_C64(0x11A44486228686C2)
 };
-/*
+
 static const uint64_t plain_T2[256] = {
 	SPH_C64(0x78C018601818D830), SPH_C64(0xAF05238C23232646),
 	SPH_C64(0xF97EC63FC6C6B891), SPH_C64(0x6F13E887E8E8FBCD),
@@ -581,7 +581,7 @@ static const uint64_t plain_T3[256] = {
 	SPH_C64(0x5D28A02828755088), SPH_C64(0xDA5C6D5C5C86B831),
 	SPH_C64(0x93F8C7F8F86BED3F), SPH_C64(0x4486228686C211A4)
 };
-/*
+
 static const uint64_t plain_T4[256] = {
 	SPH_C64(0x18601818D83078C0), SPH_C64(0x238C23232646AF05),
 	SPH_C64(0xC63FC6C6B891F97E), SPH_C64(0xE887E8E8FBCD6F13),
@@ -1126,7 +1126,7 @@ const int i0, const int i1, const int i2, const int i3, const int i4, const int 
 
 }
 #else
-__device__ uint2 ROUND_ELT(const uint2*const __restrict__  sharedMemory, uint2*  const __restrict__ in,
+static __device__ uint2 ROUND_ELT(const uint2*const __restrict__  sharedMemory, uint2*  const __restrict__ in,
 const int i0, const int i1, const int i2, const int i3, const int i4, const int i5, const int i6, const int i7)
 {
 	return (sharedMemory[__byte_perm(in[i0].x, 0, 0x4440)] ^ 
@@ -1424,9 +1424,9 @@ void x15_whirlpool_gpu_hash_64(uint32_t threads, uint32_t startNounce, uint64_t 
 		sharedMemory[threadIdx.x + 256] = SWAPDWORDS2(sharedMemory[threadIdx.x]);
 #endif
 	}
-
+	__syncthreads();
 	const uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
-//	if (thread < threads)
+	if (thread < threads)
 	{
 		const uint32_t nounce =  (startNounce + thread);
 		const uint2 InitVector_RC[10] =
@@ -1778,7 +1778,7 @@ extern void x15_whirlpool_cpu_hash_64(int thr_id, uint32_t threads, uint32_t sta
 	dim3 block(threadsperblock);
 
 	x15_whirlpool_gpu_hash_64<<<grid, block, 0, gpustream[thr_id]>>>(threads, startNounce, (uint64_t*)d_hash);
-	//MyStreamSynchronize(NULL, order, thr_id);
+	CUDA_SAFE_CALL(cudaGetLastError());
 }
 
 __host__

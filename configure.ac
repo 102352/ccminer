@@ -1,4 +1,4 @@
-AC_INIT([ccminer], [8.05-KlausT])
+AC_INIT([ccminer], [8.25-KlausT])
 
 AC_PREREQ([2.59c])
 AC_CANONICAL_SYSTEM
@@ -63,6 +63,10 @@ case $target in
     PTHREAD_FLAGS=""
     WS2_LIBS="-lws2_32"
     ;;
+  *86*-apple-darwin*)
+    have_osx=true
+    PTHREAD_FLAGS=""
+    ;;
 esac
 
 if test x$have_x86 = xtrue
@@ -100,11 +104,13 @@ AC_CHECK_LIB([pthread], [pthread_create], PTHREAD_LIBS="-lpthread",
       AC_CHECK_LIB([pthreadGC], [pthread_create], PTHREAD_LIBS="-lpthreadGC"
 ))))
 
-AC_CHECK_LIB([ssl],[SSL_library_init], [], [AC_MSG_ERROR([OpenSSL library required])])
+AC_CHECK_LIB([ssl],[SSL_library_init], [], AC_CHECK_LIB([ssl],[OPENSSL_init_ssl], [], [AC_MSG_ERROR([OpenSSL library required])]))
+
 AC_CHECK_LIB([crypto],[EVP_DigestFinal_ex], [], [AC_MSG_ERROR([OpenSSL library required])])
 
 AM_CONDITIONAL([WANT_JANSSON], [test x$request_jansson = xtrue])
 AM_CONDITIONAL([HAVE_WINDOWS], [test x$have_win32 = xtrue])
+AM_CONDITIONAL([HAVE_OSX], [test x$have_osx = xtrue])
 AM_CONDITIONAL([ARCH_x86], [test x$have_x86 = xtrue])
 AM_CONDITIONAL([ARCH_x86_64], [test x$have_x86_64 = xtrue])
 
@@ -138,14 +144,31 @@ else
   SUFFIX=""
 fi
 
+if test x$have_osx = xtrue
+then
+  SUFFIX=""
+fi
+
 dnl Setup CUDA paths
 AC_ARG_WITH([cuda],
    [  --with-cuda=PATH    prefix where cuda is installed [default=/usr/local/cuda]])
 
+# nvml library
+if test "x$have_win32" = xtrue; then
+  # Windows (do not use slashes, else ExpandEnvironmentStrings will mix them)
+  NVML_LIBPATH="%PROGRAMFILES%\\\\NVIDIA Corporation\\\\NVSMI\\\\nvml.dll"
+  m4_define([NVML_LIBPATH_HELP], [nvidia-ml library path/filename [default=%PROGRAMFILES%\\\\NVIDIA Corporation\\\\NVSMI\\\\nvml.dll]])
+else
+  NVML_LIBPATH="libnvidia-ml.so.1"
+  m4_define([NVML_LIBPATH_HELP], [nvidia-ml library path/filename [default=libnvidia-ml.so.1]])
+fi
 AC_ARG_WITH([nvml],
-   [  --with-nvml=PATH    prefix where libnvml is installed [default=/usr/lib]])
+  [AS_HELP_STRING([--with-nvml],
+  NVML_LIBPATH_HELP)],
+  [with_nvml=$withval],
+  [with_nvml=$NVML_LIBPATH])
 
-AM_CONDITIONAL([HAVE_NVML], [test -n "$with_nvml"])
+AM_CONDITIONAL([HAVE_NVML], [test "x$with_nvml" != xno])
 
 NVCC="nvcc"
 
@@ -163,11 +186,13 @@ else
   CUDA_LDFLAGS="-L/usr/local/cuda/lib$SUFFIX"
 fi
 
-if test -n "$with_nvml" ; then
-  NVML_LIBPATH=$with_nvml
+if test "x$with_nvml" != xno ; then
+  if test "x$with_nvml" != xyes ; then
+    NVML_LIBPATH=$with_nvml
+  fi
   CUDA_LDFLAGS="$CUDA_LDFLAGS -ldl"
 fi
-AC_SUBST(NVML_LIBPATH)
+AC_DEFINE_UNQUOTED(NVML_LIBPATH, ["$NVML_LIBPATH"], [nvml library to dlopen])
 
 AC_SUBST(CUDA_CFLAGS)
 AC_SUBST(CUDA_INCLUDES)
@@ -178,3 +203,4 @@ AC_SUBST(NVCC)
 AC_SUBST(OPENMP_CFLAGS) 
 
 AC_OUTPUT
+

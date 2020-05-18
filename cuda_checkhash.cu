@@ -70,7 +70,7 @@ static bool hashbelowtarget(const uint32_t *const __restrict__ hash, const uint3
 	return true;
 }
 
-__global__ __launch_bounds__(512, 4)
+__global__ __launch_bounds__(512, 2)
 void cuda_checkhash_64(uint32_t threads, uint32_t startNounce, uint32_t *hash, uint32_t *resNonces)
 {
 	const uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
@@ -107,7 +107,7 @@ uint32_t cuda_check_hash(int thr_id, uint32_t threads, uint32_t startNounce, uin
 
 /* --------------------------------------------------------------------------------------------- */
 
-__global__ __launch_bounds__(512, 4)
+__global__ __launch_bounds__(512, 2)
 void cuda_checkhash_64_suppl(uint32_t startNounce, uint32_t *hash, uint32_t *resNonces)
 {
 	const uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
@@ -236,11 +236,16 @@ __global__ void get_cuda_arch_gpu(int *d_version)
 #endif
 }
 
+extern sha_algos opt_algo;
+
 __host__ void get_cuda_arch(int *version)
 {
-	int *d_version;
-	cudaMalloc(&d_version, sizeof(int));
-	get_cuda_arch_gpu << < 1, 1 >> > (d_version);
-	cudaMemcpy(version, d_version, sizeof(int), cudaMemcpyDeviceToHost);
-	cudaFree(d_version);
+	if(opt_algo != ALGO_NEO)
+	{
+		int *d_version;
+		cudaMalloc(&d_version, sizeof(int));
+		get_cuda_arch_gpu << < 1, 1 >> > (d_version);
+		cudaMemcpy(version, d_version, sizeof(int), cudaMemcpyDeviceToHost);
+		cudaFree(d_version);
+	}
 }

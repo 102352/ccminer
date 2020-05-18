@@ -1,12 +1,13 @@
 # allow to use Host cuda functions in C/C++
 DEF_INCLUDES = @CUDA_INCLUDES@
 
-JANSSON_INCLUDES=
 if WANT_JANSSON
-JANSSON_INCLUDES= -I$(top_srcdir)/compat/jansson
+JANSSON_INCLUDES = -I$(top_srcdir)/compat/jansson
+else
+JANSSON_INCLUDES =
 endif
 
-EXTRA_DIST		= autogen.sh README.txt LICENSE.txt \
+EXTRA_DIST = autogen.sh README.txt LICENSE.txt \
 			  cudaminer.sln cudaminer.vcxproj cudaminer.vcxproj.filters \
 			  compat/gettimeofday.c compat/getopt/getopt_long.c cpuminer-config.h.in
 
@@ -14,55 +15,53 @@ SUBDIRS = compat
 
 bin_PROGRAMS = ccminer
 
-ccminer_SOURCES	= elist.h miner.h compat.h \
+ccminer_SOURCES = elist.h miner.h compat.h \
 			  compat/inttypes.h compat/stdbool.h compat/unistd.h \
 			  compat/sys/time.h compat/getopt/getopt.h \
-			  crc32.c hefty1.c \
+			  crc32.c \
 			  ccminer.cpp util.cpp \
-			  api.cpp hashlog.cpp nvml.cpp stats.cpp sysinfos.cpp cuda.cpp \
+			  api.cpp hashlog.cpp stats.cpp sysinfos.cpp cuda.cpp \
+			  nvml.cpp nvml.h nvsettings.cpp \
 			  cuda_helper.h cuda_vector.h \
-			  heavy/heavy.cu \
-			  heavy/cuda_blake512.cu heavy/cuda_blake512.h \
-			  heavy/cuda_combine.cu heavy/cuda_combine.h \
-			  heavy/cuda_groestl512.cu heavy/cuda_groestl512.h \
-			  heavy/cuda_hefty1.cu heavy/cuda_hefty1.h \
-			  heavy/cuda_keccak512.cu heavy/cuda_keccak512.h \
-			  heavy/cuda_sha256.cu heavy/cuda_sha256.h \
-			  sph/neoscrypt.h sph/neoscrypt.c \
+			  sph/neoscrypt.h sph/neoscrypt-cpu.cpp \
 			  sph/sha256_Y.h sph/sha256_Y.c sph/sph_sha2.c \
-			  fuguecoin.cpp Algo256/cuda_fugue256.cu sph/fugue.c uint256.h \
+			  fuguecoin.cpp Algo256/cuda_fugue256.cu sph/fugue.c \
 			  groestlcoin.cpp cuda_groestlcoin.cu cuda_groestlcoin.h \
 			  myriadgroestl.cpp cuda_myriadgroestl.cu \
 			  lyra2/Lyra2.c lyra2/Sponge.c \
-			  lyra2/lyra2REv2.cu lyra2/cuda_lyra2v2.cu \
+			  lyra2/lyra2REv2.cpp lyra2/cuda_lyra2v2.cu \
+			  lyra2/lyra2REv3.cpp lyra2/cuda_lyra2v3.cu \
 			  Algo256/cuda_blake256.cu Algo256/cuda_groestl256.cu Algo256/cuda_keccak256.cu Algo256/cuda_skein256.cu \
 			  Algo256/cuda_bmw256.cu Algo256/cuda_cubehash256.cu \
-			  Algo256/blake256.cu Algo256/keccak256.cu \
-			  JHA/jackpotcoin.cu JHA/cuda_jha_keccak512.cu \
+			  Algo256/blake256.cu Algo256/keccak256.cpp \
+			  JHA/jackpotcoin.cpp JHA/cuda_jha_keccak512.cu \
 			  JHA/cuda_jha_compactionTest.cu cuda_checkhash.cu \
 			  quark/cuda_jh512.cu quark/cuda_quark_blake512.cu quark/cuda_quark_groestl512.cu quark/cuda_skein512.cu \
 			  quark/cuda_bmw512.cu quark/cuda_quark_keccak512.cu quark/cuda_jh512keccak512.cu \
-			  quark/quarkcoin.cu \
+			  quark/quarkcoin.cpp \
 			  quark/cuda_quark_compactionTest.cu  \
-			  cuda_nist5.cu pentablake.cu skein.cu \
-			  Sia/sia.cu Sia/cuda_sia.cu \
+			  nist5.cpp pentablake.cu skein.cpp \
+			  Sia/sia.cpp Sia/cuda_sia.cu \
 			  sph/bmw.c sph/blake.c sph/groestl.c sph/jh.c sph/keccak.c sph/skein.c \
+			  BlueMidnightWish_opt.c SHA3api_ref.h \
 			  sph/cubehash.c sph/echo.c sph/luffa.c sph/sha2.c sph/shavite.c sph/simd.c \
 			  sph/hamsi.c sph/hamsi_helper.c sph/sph_hamsi.h \
 			  sph/shabal.c sph/whirlpool.c sph/sha2big.c sph/haval.c \
-			  qubit/qubit.cu qubit/qubit_luffa512.cu qubit/deep.cu qubit/doom.cu \
-			  x11/x11.cu x11/fresh.cu x11/cuda_x11_luffa512.cu x11/cuda_x11_cubehash512.cu \
-			  x11/cuda_x11_shavite512.cu x11/cuda_x11_simd512.cu x11/cuda_x11_echo.cu \
+			  qubit/qubit.cpp qubit/qubit_luffa512.cu qubit/deep.cpp qubit/doom.cpp \
+			  x11/x11.cpp x11/fresh.cpp x11/cuda_x11_luffa512.cu x11/cuda_x11_cubehash512.cu \
+			  x11/cuda_x11_shavite512.cu x11/cuda_x11_echo.cu \
+			  x11/cuda_x11_simd512_func.cuh x11/cuda_x11_simd512.cu \
 			  x11/cuda_x11_luffa512_Cubehash.cu \
-			  x13/x13.cu x13/cuda_x13_hamsi512.cu x13/cuda_x13_fugue512.cu \
-			  x15/x14.cu x15/x15.cu x15/cuda_x14_shabal512.cu x15/cuda_x15_whirlpool.cu \
+			  x13/x13.cpp x13/cuda_x13_hamsi512.cu x13/cuda_x13_fugue512.cu \
+			  x15/x14.cpp x15/x15.cpp x15/cuda_x14_shabal512.cu x15/cuda_x15_whirlpool.cu \
 			  x15/whirlpool.cu \
-			  x17/x17.cu x17/cuda_x17_haval512.cu x17/cuda_x17_sha512.cu \
-			  x11/s3.cu x11/c11.cu \
-			  bitcoin.cu cuda_bitcoin.cu \
-			  x15/cuda_whirlpoolx.cu x15/whirlpoolx.cu \
-			  neoscrypt/neoscrypt.cu neoscrypt/cuda_neoscrypt.cu \
-			  bitcredit/cuda_bitcredit.cu bitcredit/bitcredit.cu
+			  x17/x17.cpp x17/cuda_x17_haval512.cu x17/cuda_x17_sha512.cu \
+			  x11/s3.cpp x11/c11.cpp \
+			  bitcoin.cpp cuda_bitcoin.cu \
+			  x15/cuda_whirlpoolx.cu x15/whirlpoolx.cpp \
+			  neoscrypt/neoscrypt.cpp neoscrypt/cuda_neoscrypt.cu \
+			  neoscrypt/cuda_neoscrypt_tpruvot.cu \
+			  neoscrypt/cuda_vector_tpruvot.cuh neoscrypt/cuda_vector_uint2x4.cuh
 
 # scrypt
 # ccminer_SOURCES += scrypt.cpp scrypt-jane.cpp \
@@ -77,22 +76,28 @@ nvml_defs = -DUSE_WRAPNVML
 nvml_libs = -ldl
 endif
 
-if HAVE_WINDOWS
-ccminer_SOURCES += compat/winansi.c
-endif
-
 ccminer_LDFLAGS  = $(PTHREAD_FLAGS) @CUDA_LDFLAGS@
 ccminer_LDADD    = @LIBCURL@ @JANSSON_LIBS@ @PTHREAD_LIBS@ @WS2_LIBS@ @CUDA_LIBS@ @OPENMP_CFLAGS@ @LIBS@ $(nvml_libs)
 ccminer_CPPFLAGS = @LIBCURL_CPPFLAGS@ @OPENMP_CFLAGS@ $(CPPFLAGS) $(PTHREAD_FLAGS) -fno-strict-aliasing $(JANSSON_INCLUDES) $(DEF_INCLUDES) $(nvml_defs) -DSCRYPT_KECCAK512 -DSCRYPT_CHACHA -DSCRYPT_CHOOSE_COMPILETIME
 
-nvcc_ARCH  = -gencode=arch=compute_52,code=\"sm_52,compute_52\"
-nvcc_ARCH += -gencode=arch=compute_50,code=\"sm_50,compute_50\"
-nvcc_ARCH += -gencode=arch=compute_35,code=\"sm_35,compute_35\"
-nvcc_ARCH += -gencode=arch=compute_32,code=\"sm_32,compute_32\"
-nvcc_ARCH += -gencode=arch=compute_30,code=\"sm_30,compute_30\"
+if HAVE_OSX
+ccminer_CPPFLAGS += -I/usr/local/llvm/lib/clang/4.0.0/include
+ccminer_LDFLAGS += -L/usr/local/llvm/lib
+ccminer_LDADD += -lomp
+endif
+
+nvcc_ARCH  = -gencode=arch=compute_61,code=sm_61
+nvcc_ARCH += -gencode=arch=compute_60,code=sm_60
+nvcc_ARCH += -gencode=arch=compute_52,code=sm_52
+nvcc_ARCH += -gencode=arch=compute_50,code=sm_50
+nvcc_ARCH += -gencode=arch=compute_37,code=sm_37
+nvcc_ARCH += -gencode=arch=compute_35,code=sm_35
+nvcc_ARCH += -gencode=arch=compute_30,code=sm_30
+nvcc_ARCH += -gencode=arch=compute_70,code=sm_70
+nvcc_ARCH += -gencode=arch=compute_75,code=sm_75
 
 nvcc_FLAGS = $(nvcc_ARCH) @CUDA_INCLUDES@ -I. @CUDA_CFLAGS@
-nvcc_FLAGS += $(JANSSON_INCLUDES) --ptxas-options="-v"
+nvcc_FLAGS += $(JANSSON_INCLUDES)
 
 # we're now targeting all major compute architectures within one binary.
 .cu.o:
@@ -132,13 +137,11 @@ quark/cuda_quark_compactionTest.o: quark/cuda_quark_compactionTest.cu
 JHA/cuda_jha_compactionTest.o: JHA/cuda_jha_compactionTest.cu
 	$(NVCC) $(nvcc_FLAGS) -I cudpp-2.1/include --maxrregcount=80 -o $@ -c $<
 
-# This kernel need also an older SM to be able to autotune kernels
-# scrypt/salsa_kernel.o: scrypt/salsa_kernel.cu
-# 	$(NVCC) $(nvcc_FLAGS) -gencode=arch=compute_20,code=\"sm_21,compute_20\" --maxrregcount=80 -o $@ -c $<
-
 skein.o: skein.cu
 	$(NVCC) $(nvcc_FLAGS) --maxrregcount=64 -o $@ -c $<
 
-# This kernel requires at least sm_32
 neoscrypt/cuda_neoscrypt.o: neoscrypt/cuda_neoscrypt.cu
-	$(NVCC)  -gencode=arch=compute_52,code=\"sm_52,compute_52\" -gencode=arch=compute_50,code=\"sm_50,compute_50\" -gencode=arch=compute_35,code=\"sm_35,compute_35\" -gencode=arch=compute_32,code=\"sm_32,compute_32\" @CUDA_INCLUDES@ -I. @CUDA_CFLAGS@ $(JANSSON_INCLUDES) --ptxas-options="-v" -o $@ -c $<
+	$(NVCC) -gencode=arch=compute_61,code=sm_61 -gencode=arch=compute_60,code=sm_60 -gencode=arch=compute_52,code=sm_52 -gencode=arch=compute_50,code=sm_50 -gencode=arch=compute_35,code=sm_35 -gencode=arch=compute_37,code=sm_37 -gencode=arch=compute_70,code=sm_70 -gencode=arch=compute_75,code=sm_75 @CUDA_INCLUDES@ -I. @CUDA_CFLAGS@ -o $@ -c $<
+
+neoscrypt/cuda_neoscrypt_tpruvot.o: neoscrypt/cuda_neoscrypt_tpruvot.cu
+	$(NVCC) -gencode=arch=compute_60,code=sm_60 -gencode=arch=compute_61,code=sm_61 -gencode=arch=compute_70,code=sm_70 -gencode=arch=compute_75,code=sm_75 @CUDA_INCLUDES@ -I. $(JANSSON_INCLUDES) @CUDA_CFLAGS@ -o $@ -c $<

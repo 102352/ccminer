@@ -33,7 +33,7 @@ static uint32_t *d_nonce[MAX_GPUS];
 
 
 /* Message expansion function 1 */
-__forceinline__ __device__ uint32_t expand32_1(int i, const uint32_t *message, const uint32_t *H, const uint32_t *Q)
+static __forceinline__ __device__ uint32_t expand32_1(int i, const uint32_t *message, const uint32_t *H, const uint32_t *Q)
 {
 	return (ss1(Q[i - 16]) + ss2(Q[i - 15]) + ss3(Q[i - 14]) + ss0(Q[i - 13])
 					+ ss1(Q[i - 12]) + ss2(Q[i - 11]) + ss3(Q[i - 10]) + ss0(Q[i - 9])
@@ -43,7 +43,7 @@ __forceinline__ __device__ uint32_t expand32_1(int i, const uint32_t *message, c
 }
 
 /* Message expansion function 2 */
-__forceinline__ __device__ uint32_t expand32_2(const int i, const uint32_t *message, const uint32_t *H, const uint32_t *Q)
+static __forceinline__ __device__ uint32_t expand32_2(const int i, const uint32_t *message, const uint32_t *H, const uint32_t *Q)
 {
 	return (
 		rs2(Q[i - 13]) + rs3(Q[i - 11]) + rs4(Q[i - 9]) + rs1(Q[i - 15]) +
@@ -55,7 +55,7 @@ __global__	__launch_bounds__(TPB, 2)
 void bmw256_gpu_hash_32(uint32_t threads, uint32_t startNounce, uint2 *g_hash, uint32_t *const __restrict__ nonceVector, uint32_t Target)
 {
 	const uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
-	//	if (thread < threads)
+	if (thread < threads)
 	{
 		uint32_t backup = Target;
 		uint32_t message[16] = {0};
@@ -306,6 +306,8 @@ void bmw256_cpu_hash_32(int thr_id, uint32_t threads, uint32_t startNounce, uint
 
 	bmw256_gpu_hash_32 << <grid, block >> >(threads, startNounce, (uint2 *)g_hash, d_nonce[thr_id], Target);
 	CUDA_SAFE_CALL(cudaGetLastError());
+	if(opt_debug)
+		CUDA_SAFE_CALL(cudaDeviceSynchronize());
 	CUDA_SAFE_CALL(cudaMemcpy(h_nonce[thr_id], d_nonce[thr_id], 2 * sizeof(uint32_t), cudaMemcpyDeviceToHost));
 	resultnonces[0] = *(h_nonce[thr_id]);
 	resultnonces[1] = *(h_nonce[thr_id] + 1);

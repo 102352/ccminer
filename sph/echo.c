@@ -60,10 +60,6 @@ extern "C"{
 #undef SPH_ECHO_64
 #endif
 
-#ifdef _MSC_VER
-#pragma warning (disable: 4146)
-#endif
-
 #define T32   SPH_T32
 #define C32   SPH_C32
 #if SPH_64
@@ -321,9 +317,9 @@ mix_column(sph_u64 W[16][2], int ia, int ib, int ic, int id)
 		sph_u32 K1 = sc->C1; \
 		sph_u32 K2 = sc->C2; \
 		sph_u32 K3 = sc->C3; \
-		unsigned u; \
+		unsigned x; \
 		INPUT_BLOCK_SMALL(sc); \
-		for (u = 0; u < 8; u ++) { \
+		for (x = 0; x < 8; x ++) { \
 			BIG_ROUND; \
 		} \
 		FINAL_SMALL; \
@@ -334,9 +330,9 @@ mix_column(sph_u64 W[16][2], int ia, int ib, int ic, int id)
 		sph_u32 K1 = sc->C1; \
 		sph_u32 K2 = sc->C2; \
 		sph_u32 K3 = sc->C3; \
-		unsigned u; \
+		unsigned x; \
 		INPUT_BLOCK_BIG(sc); \
-		for (u = 0; u < 10; u ++) { \
+		for (x = 0; x < 10; x ++) { \
 			BIG_ROUND; \
 		} \
 		FINAL_BIG; \
@@ -835,7 +831,7 @@ echo_small_close(sph_echo_small_context *sc, unsigned ub, unsigned n,
 		sc->C0 = sc->C1 = sc->C2 = sc->C3 = 0;
 	}
 	z = 0x80 >> n;
-	buf[ptr ++] = ((ub & -z) | z) & 0xFF;
+	buf[ptr ++] = ((ub & (~z + 1)) | z) & 0xFF;
 	memset(buf + ptr, 0, (sizeof sc->buf) - ptr);
 	if (ptr > ((sizeof sc->buf) - 18)) {
 		echo_small_compress(sc);
@@ -894,7 +890,7 @@ echo_big_close(sph_echo_big_context *sc, unsigned ub, unsigned n,
 		sc->C0 = sc->C1 = sc->C2 = sc->C3 = 0;
 	}
 	z = 0x80 >> n;
-	buf[ptr ++] = ((ub & -z) | z) & 0xFF;
+	buf[ptr ++] = ((ub & (~z + 1)) | z) & 0xFF;
 	memset(buf + ptr, 0, (sizeof sc->buf) - ptr);
 	if (ptr > ((sizeof sc->buf) - 18)) {
 		echo_big_compress(sc);

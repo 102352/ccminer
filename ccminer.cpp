@@ -9,8 +9,12 @@
  * any later version.  See COPYING for more details.
  */
 
+#ifndef WIN32
 #include "ccminer-config.h"
-#include "cuda_runtime_api.h"
+#else
+#include "ccminer-config-win.h"
+#endif
+#include "cuda_runtime.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -53,8 +57,12 @@ BOOL WINAPI ConsoleHandler(DWORD);
 
 #define PROGRAM_NAME		"ccminer"
 #define LP_SCANTIME		25
-#define HEAVYCOIN_BLKHDR_SZ		84
 #define MNR_BLKHDR_SZ 80
+
+double expectedblocktime(const uint32_t *target);
+
+extern void get_cuda_arch(int *version);
+extern int cuda_arch[MAX_GPUS];
 
 // from cuda.cpp
 int cuda_num_devices();
@@ -62,27 +70,35 @@ void cuda_devicenames();
 void cuda_devicereset();
 int cuda_finddevice(char *name);
 void cuda_print_devices();
+void cuda_get_device_sm();
+void cuda_reset_device(int thr_id, bool *init);
 
 #include "nvml.h"
 #ifdef USE_WRAPNVML
 nvml_handle *hnvml = NULL;
 #endif
 
-enum workio_commands {
+enum workio_commands
+{
 	WC_GET_WORK,
 	WC_SUBMIT_WORK,
 };
 
-struct workio_cmd {
-	enum workio_commands	cmd;
-	struct thr_info		*thr;
-	union {
-		struct work	*work;
-	} u;
+struct workio_cmd
+{
+	struct thr_info *thr;
+	struct work	*work;
+	enum workio_commands cmd;
 };
 
-static const char *algo_names[] = {
-	"credit",
+bool opt_debug_diff = false;
+bool opt_debug_threads = false;
+bool opt_showdiff = true;
+bool opt_hwmonitor = false;
+
+const char *algo_names[] =
+{
+	"invalid",
 	"bitcoin",
 	"blake",
 	"blakecoin",
@@ -93,12 +109,11 @@ static const char *algo_names[] = {
 	"fresh",
 	"fugue256",
 	"groestl",
-	"heavy",
 	"keccak",
 	"jackpot",
 	"luffa",
 	"lyra2v2",
-	"mjollnir",
+	"lyra2v3",
 	"myr-gr",
 	"nist5",
 	"penta",
@@ -107,7 +122,6 @@ static const char *algo_names[] = {
 	"sia",
 	"skein",
 	"s3",
-	"spread",
 	"whirl",
 	"whirlpoolx",
 	"x11",
@@ -119,6 +133,7 @@ static const char *algo_names[] = {
 	"neoscrypt"
 };
 
+char curl_err_str[CURL_ERROR_SIZE];
 bool opt_verify = true;
 bool opt_debug = false;
 bool opt_protocol = false;
@@ -136,29 +151,36 @@ bool use_colors = true;
 static bool opt_background = false;
 bool opt_quiet = false;
 static int opt_retries = -1;
-static int opt_fail_pause = 30;
-int opt_timeout = 270;
+static int opt_fail_pause = 20;
+int opt_timeout = 120;
 static int opt_scantime = 25;
 static json_t *opt_config = nullptr;
 static const bool opt_time = true;
-enum sha_algos opt_algo;
+enum sha_algos opt_algo = ALGO_INVALID;
 int opt_n_threads = 0;
+int gpu_threads = 1;
 int opt_affinity = -1;
 int opt_priority = 0;
 static double opt_difficulty = 1; // CH
 static bool opt_extranonce = true;
 bool opt_trust_pool = false;
-uint16_t opt_vote = 9999;
 int num_cpus;
 int active_gpus;
+bool need_nvsettings = false;
+bool need_memclockrst = false;
 char * device_name[MAX_GPUS] = { nullptr };
 int device_map[MAX_GPUS] = { 0 };
 long  device_sm[MAX_GPUS] = { 0 };
 uint32_t gpus_intensity[MAX_GPUS] = {0};
+int32_t device_mem_offsets[MAX_GPUS] = {0};
 uint32_t device_gpu_clocks[MAX_GPUS] = {0};
 uint32_t device_mem_clocks[MAX_GPUS] = {0};
 uint32_t device_plimit[MAX_GPUS] = {0};
 int8_t device_pstate[MAX_GPUS];
+int32_t device_led[MAX_GPUS] = {-1, -1};
+int opt_led_mode = 0;
+int opt_cudaschedule = -1;
+uint8_t device_tlimit[MAX_GPUS] = {0};
 char *rpc_user = NULL;
 static char *rpc_url = nullptr;
 static char *rpc_userpass = nullptr;
@@ -173,24 +195,31 @@ struct thr_api *thr_api = nullptr;
 int longpoll_thr_id = -1;
 int stratum_thr_id = -1;
 int api_thr_id = -1;
+int monitor_thr_id = -1;
 bool stratum_need_reset = false;
+volatile bool abort_flag = false;
 struct work_restart *work_restart = NULL;
+bool send_stale;
 struct stratum_ctx stratum = { 0 };
 bool stop_mining = false;
-volatile bool mining_has_stopped[MAX_GPUS] = { false };
+volatile bool mining_has_stopped[MAX_GPUS];
+unsigned int cudaschedule = cudaDeviceScheduleBlockingSync;
+FILE *logfilepointer;
+char *logfilename;
+bool opt_logfile = false;
 
 pthread_mutex_t applog_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t stats_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t stats_lock = PTHREAD_MUTEX_INITIALIZER;
 uint32_t accepted_count = 0L;
 uint32_t rejected_count = 0L;
-static double thr_hashrates[MAX_GPUS];
+double thr_hashrates[MAX_GPUS];
 uint64_t global_hashrate = 0;
 double   global_diff = 0.0;
 uint64_t net_hashrate = 0;
 uint64_t net_blocks = 0;
 
 int opt_statsavg = 30;
-uint16_t opt_api_listen = 4068; /* 0 to disable */
+uint16_t opt_api_listen = 0; /* 0 to disable */
 bool opt_stratum_stats = true;
 static char* opt_syslog_pfx = nullptr;
 char *opt_api_allow = nullptr;
@@ -214,18 +243,16 @@ Options:\n\
 			blake       Blake 256 (SFR/NEOS)\n\
 			blakecoin   Fast Blake 256 (8 rounds)\n\
 			c11         X11 variant\n\
-			credit      Credit\n\
 			deep        Deepcoin\n\
 			dmd-gr      Diamond-Groestl\n\
 			fresh       Freshcoin (shavite 80)\n\
 			fugue256    Fuguecoin\n\
 			groestl     Groestlcoin\n\
-			heavy       Heavycoin\n\
-			jackpot     Jackpot\n\
+			jackpot     Jackpot (JHA)\n\
 			keccak      Keccak-256 (Maxcoin)\n\
 			luffa       Doomcoin\n\
-			lyra2v2     VertCoin\n\
-			mjollnir    Mjollnircoin\n\
+			lyra2v2     Monacoin\n\
+            lyra2v3     Vertcoin\n\
 			myr-gr      Myriad-Groestl\n\
 			neoscrypt   neoscrypt (FeatherCoin)\n\
 			nist5       NIST5 (TalkCoin)\n\
@@ -235,14 +262,12 @@ Options:\n\
 			sia         Siacoin (at pools compatible to siamining.com) \n\
 			skein       Skein SHA2 (Skeincoin)\n\
 			s3          S3 (1Coin)\n\
-			spread      Spread\n\
 			x11         X11 (DarkCoin)\n\
 			x13         X13 (MaruCoin)\n\
 			x14         X14\n\
 			x15         X15\n\
 			x17         X17 (peoplecurrency)\n\
 			vanilla     Blake 256 8 rounds\n\
-			yescrypt    yescrypt\n\
 			whirl       Whirlcoin (old whirlpool)\n\
 			whirlpoolx  Vanillacoin \n\
   -d, --devices         Comma separated list of CUDA devices to use. \n\
@@ -253,13 +278,12 @@ Options:\n\
                         Decimals are allowed for fine tuning \n\
   -f, --diff-factor     Divide difficulty by this factor (default 1.0) \n\
   -m, --diff-multiplier Multiply difficulty by this value (default 1.0) \n\
-  -v, --vote=VOTE       block reward vote (for HeavyCoin)\n\
   -o, --url=URL         URL of mining server\n\
   -O, --userpass=U:P    username:password pair for mining server\n\
   -u, --user=USERNAME   username for mining server\n\
   -p, --pass=PASSWORD   password for mining server\n\
       --cert=FILE       certificate for mining server using SSL\n\
-  -x, --proxy=[PROTOCOL://]HOST[:PORT]  connect through a proxy\n\
+  -x, --proxy=...       [PROTOCOL://]HOST[:PORT]  connect through a proxy\n\
   -t, --threads=N       number of miner threads (default: number of nVidia GPUs)\n\
   -r, --retries=N       number of times to retry if a network call fails\n\
                           (default: retry indefinitely)\n\
@@ -272,19 +296,24 @@ Options:\n\
       --no-gbt          disable getblocktemplate support (height check in solo)\n\
       --no-longpoll     disable X-Long-Polling support\n\
       --no-stratum      disable X-Stratum support\n\
-	-e                    disable extranonce\n\
+  -e                    disable extranonce\n\
   -q, --quiet           disable per-thread hashmeter output\n\
       --no-color        disable colored output\n\
+      --hwmonitor       show data like temperature, fan speed, etc.\n\
   -D, --debug           enable debug output\n\
   -P, --protocol-dump   verbose dump of protocol-level activities\n\
       --cpu-affinity    set process affinity to cpu core(s), mask 0x3 for cores 0 and 1\n\
       --cpu-priority    set process priority (default: 0 idle, 2 normal to 5 highest)\n\
-  -b, --api-bind        IP/Port for the miner API (default: 127.0.0.1:4068)\n\
+      --cuda-schedule   set CUDA scheduling option:\n\
+                        0: BlockingSync (default)\n\
+                        1: Spin\n\
+                        2: Yield\n\
+  -b, --api-bind=...    IP address and port number for the miner API (example: 127.0.0.1:4068)\n\
+      --logfile=FILE    create logfile\n\
   -S, --syslog          use system log for output messages\n\
       --syslog-prefix=... allow to change syslog tool name\n\
   -B, --background      run the miner in the background\n\
       --benchmark       run in offline benchmark mode\n\
-      --cputest         debug hashes from cpu algorithms\n\
       --no-cpu-verify   don't verify the found results\n\
   -c, --config=FILE     load a JSON-format configuration file\n\
   -V, --version         display version information and exit\n\
@@ -293,70 +322,67 @@ Options:\n\
 "\
       --mem-clock=N     Set the gpu memory max clock (346.72+ driver)\n\
       --gpu-clock=N     Set the gpu engine max clock (346.72+ driver)\n\
-      --pstate=N        Set the gpu power state (352.21+ driver)\n\
-			--plimit=N        Set the gpu power limit(352.21 + driver)\n"
+      --pstate=N        (not for 10xx cards) Set the gpu power state (352.21+ driver)\n\
+      --plimit=N        Set the gpu power limit (352.21+ driver)\n"
 #endif
 "";
 
 static char const short_options[] =
-#ifndef WIN32
-"B"
-#endif
 #ifdef HAVE_SYSLOG_H
 "S"
 #endif
-"a:c:i:Dhp:Px:nqr:R:s:t:T:o:u:O:Vd:f:m:v:N:b:e";
+"a:c:i:Dhp:Px:nqr:R:s:t:T:o:u:O:Vd:f:m:N:b:eB";
 
 static struct option const options[] =
 {
-	{ "algo", 1, NULL, 'a' },
-	{ "api-bind", 1, NULL, 'b' },
-#ifndef WIN32
-	{ "background", 0, NULL, 'B' },
-#endif
-	{ "benchmark", 0, NULL, 1005 },
-	{ "cert", 1, NULL, 1001 },
-	{ "no-cpu-verify", 0, NULL, 1022 },
-	{ "config", 1, NULL, 'c' },
-	{ "cputest", 0, NULL, 1006 },
-	{ "cpu-affinity", 1, NULL, 1020 },
-	{ "cpu-priority", 1, NULL, 1021 },
-	{ "debug", 0, NULL, 'D' },
-	{ "help", 0, NULL, 'h' },
-	{ "intensity", 1, NULL, 'i' },
-	{ "ndevs", 0, NULL, 'n' },
-	{ "no-color", 0, NULL, 1002 },
-	{ "no-gbt", 0, NULL, 1011 },
-	{ "no-longpoll", 0, NULL, 1003 },
-	{ "no-stratum", 0, NULL, 1007 },
-	{ "pass", 1, NULL, 'p' },
-	{ "protocol-dump", 0, NULL, 'P' },
-	{ "proxy", 1, NULL, 'x' },
-	{ "quiet", 0, NULL, 'q' },
-	{ "retries", 1, NULL, 'r' },
-	{ "retry-pause", 1, NULL, 'R' },
-	{ "scantime", 1, NULL, 's' },
-	{ "statsavg", 1, NULL, 'N' },
+	{"algo", 1, NULL, 'a'},
+	{"api-bind", 1, NULL, 'b'},
+	{"background", 0, NULL, 'B'},
+	{"benchmark", 0, NULL, 1005},
+	{"cert", 1, NULL, 1001},
+	{"no-cpu-verify", 0, NULL, 1022},
+	{"config", 1, NULL, 'c'},
+	{"cputest", 0, NULL, 1006},
+	{"cpu-affinity", 1, NULL, 1020},
+	{"cpu-priority", 1, NULL, 1021},
+	{"cuda-schedule", 1, NULL, 1025},
+	{"debug", 0, NULL, 'D'},
+	{"help", 0, NULL, 'h'},
+	{"intensity", 1, NULL, 'i'},
+	{"ndevs", 0, NULL, 'n'},
+	{"no-color", 0, NULL, 1002},
+	{"no-gbt", 0, NULL, 1011},
+	{"no-longpoll", 0, NULL, 1003},
+	{"no-stratum", 0, NULL, 1007},
+	{"pass", 1, NULL, 'p'},
+	{"protocol-dump", 0, NULL, 'P'},
+	{"proxy", 1, NULL, 'x'},
+	{"quiet", 0, NULL, 'q'},
+	{"retries", 1, NULL, 'r'},
+	{"retry-pause", 1, NULL, 'R'},
+	{"scantime", 1, NULL, 's'},
+	{"statsavg", 1, NULL, 'N'},
 #ifdef HAVE_SYSLOG_H
-	{ "syslog", 0, NULL, 'S' },
-	{ "syslog-prefix", 1, NULL, 1008 },
+	{"syslog", 0, NULL, 'S'},
+	{"syslog-prefix", 1, NULL, 1008},
 #endif
-	{ "threads", 1, NULL, 't' },
-	{ "Disable extranounce support", 1, NULL, 'e' },
-	{ "vote", 1, NULL, 'v' },
-	{ "timeout", 1, NULL, 'T' },
-	{ "url", 1, NULL, 'o' },
-	{ "user", 1, NULL, 'u' },
-	{ "userpass", 1, NULL, 'O' },
-	{ "version", 0, NULL, 'V' },
-	{ "devices", 1, NULL, 'd' },
-	{ "diff-multiplier", 1, NULL, 'm' },
-	{ "diff-factor", 1, NULL, 'f' },
-	{ "diff", 1, NULL, 'f' }, // compat
+	{"threads", 1, NULL, 't'},
+	{"Disable extranounce support", 1, NULL, 'e'},
+	{"timeout", 1, NULL, 'T'},
+	{"url", 1, NULL, 'o'},
+	{"user", 1, NULL, 'u'},
+	{"userpass", 1, NULL, 'O'},
+	{"version", 0, NULL, 'V'},
+	{"devices", 1, NULL, 'd'},
+	{"diff-multiplier", 1, NULL, 'm'},
+	{"diff-factor", 1, NULL, 'f'},
+	{"diff", 1, NULL, 'f'}, // compat
 	{"gpu-clock", 1, NULL, 1070},
 	{"mem-clock", 1, NULL, 1071},
 	{"pstate", 1, NULL, 1072},
 	{"plimit", 1, NULL, 1073},
+	{"logfile", 1, NULL, 1074},
+	{"hwmonitor", 0, NULL, 1075},
 	{0, 0, 0, 0}
 };
 
@@ -387,7 +413,7 @@ static void affine_to_cpu_mask(int id, uint8_t mask)
 		// cpu mask
 		if(mask & (1 << i))
 		{
-			CPU_SET(i, &set); printf("%d \n", i);
+			CPU_SET(i, &set);
 		}
 	}
 	if(id == -1)
@@ -415,7 +441,8 @@ static void affine_to_cpu_mask(int id, uint8_t mask)
 	}
 	cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, sizeof(cpuset_t), &set);
 }
-#else /* Windows */
+#else
+#ifdef WIN32
 static inline void drop_policy(void)
 {}
 static void affine_to_cpu_mask(int id, uint8_t mask)
@@ -425,6 +452,14 @@ static void affine_to_cpu_mask(int id, uint8_t mask)
 	else
 		SetThreadAffinityMask(GetCurrentThread(), mask);
 }
+#else // OSX is not linux
+static inline void drop_policy(void)
+{
+}
+static void affine_to_cpu_mask(int id, uint8_t mask)
+{
+}
+#endif
 #endif
 
 static bool get_blocktemplate(CURL *curl, struct work *work);
@@ -437,45 +472,65 @@ void get_currentalgo(char* buf, int sz)
 /**
 * Exit app
 */
+static bool already_exiting = false; // make sure only one thread executes proper_exit()
 void proper_exit(int reason)
 {
-#ifdef USE_WRAPNVML
-	if(hnvml)
-		nvml_destroy(hnvml);
-#endif
-	if(reason == 2)
+	extern struct stratum_ctx stratum;
+	if(already_exiting)
+		sleep(10);
+	else
 	{
-		pthread_mutex_lock(&g_work_lock);	//freeze stratum
-		stop_mining = true;
-		applog(LOG_INFO, "stopping %d threads", opt_n_threads);
-		bool everything_stopped;
-		do
+		already_exiting = true;
+		if(opt_n_threads > 0)
 		{
-			everything_stopped = true;
-			for(int i = 0; i < opt_n_threads; i++)
+			time_t start = time(NULL);
+			stop_mining = true;
+			bool everything_stopped;
+			do
 			{
-				if(!mining_has_stopped[i])
-					everything_stopped = false;
-			}
-		} while(!everything_stopped);
-		applog(LOG_INFO, "resetting GPUs");
-		cuda_devicereset();
-	}
-	free(opt_syslog_pfx);
-		opt_syslog_pfx = nullptr;
-	free(opt_api_allow);
-		opt_api_allow = nullptr;
-	hashlog_purge_all();
-	stats_purge_all();
+				everything_stopped = true;
+				for(int i = 0; i < opt_n_threads; i++)
+				{
+					if(!mining_has_stopped[i])
+						everything_stopped = false;
+				}
+			} while(!everything_stopped && (time(NULL) - start) < 5);
+			cuda_devicereset();
+		}
+		pthread_mutex_lock(&stratum.sock_lock);
+		curl_global_cleanup();
+		pthread_mutex_unlock(&stratum.sock_lock);
 
 #ifdef WIN32
-	timeEndPeriod(1); // else never executed
+		timeEndPeriod(1);
 #endif
-
-	exit(reason & 1);
+#ifdef USE_WRAPNVML
+		if(hnvml)
+		{
+			for(int n = 0; n < opt_n_threads; n++)
+			{
+				nvml_reset_clocks(hnvml, device_map[n]);
+			}
+			nvml_destroy(hnvml);
+		}
+		if(need_memclockrst)
+		{
+#ifdef WIN32
+			for(int n = 0; n < opt_n_threads; n++)
+			{
+				nvapi_toggle_clocks(n, false);
+			}
+#endif
+		}
+#endif
+	}
+	if(opt_logfile)
+		fclose(logfilepointer);
+	sleep(1);
+	exit(reason);
 }
 
-static bool jobj_binary(const json_t *obj, const char *key,
+static size_t jobj_binary(const json_t *obj, const char *key,
 						void *buf, size_t buflen)
 {
 	const char *hexstr;
@@ -493,67 +548,36 @@ static bool jobj_binary(const json_t *obj, const char *key,
 		applog(LOG_ERR, "JSON key '%s' is not a string", key);
 		return false;
 	}
-	if(strlen(hexstr)/2 > buflen)
-		return false;
-	if(!hex2bin((uchar*)buf, hexstr, buflen))
-		return false;
-
-	return true;
+	if(strlen(hexstr) / 2 <= buflen)
+		hex2bin((uchar*)buf, hexstr, buflen);
+	else
+		return 0;
+	return strlen(hexstr)/2;
 }
 
 static bool work_decode(const json_t *val, struct work *work)
 {
-	int data_size;
-	int target_size = sizeof(work->target);
+	int target_size;
 	int midstate_size = sizeof(work->midstate);
 	int atarget_sz = ARRAY_SIZE(work->target);
 	int i;
 
-	switch(opt_algo)
-	{
-		case ALGO_NEO:
-			data_size = 84;
-			break;
-		case ALGO_BITC:
-			data_size = 168;
-			break;
-		default:
-			data_size = 128;
-			break;
-	}
-	int adata_sz = data_size / 4;
+	size_t data_size = jobj_binary(val, "data", work->data, sizeof(work->data));
 
-	if(unlikely(!jobj_binary(val, "data", work->data, data_size)))
+	if(opt_algo != ALGO_NEO && data_size != 128)
 	{
-		applog(LOG_ERR, "JSON inval data");
+		applog(LOG_ERR, "JSON invalid data");
 		return false;
 	}
-	if(unlikely(!jobj_binary(val, "target", work->target, target_size)))
+	work->datasize = data_size;
+	int adata_sz = (int)data_size / 4;
+
+	target_size = (int)jobj_binary(val, "target", work->target, sizeof(work->target));
+	if(target_size != sizeof(work->target))
 	{
-		applog(LOG_ERR, "JSON inval target");
+		applog(LOG_ERR, "JSON invalid target", target_size);
 		return false;
 	}
-
-	if(opt_algo == ALGO_BITC)
-	{
-		if(unlikely(!jobj_binary(val, "midstate", work->midstate, midstate_size)))
-		{
-			applog(LOG_ERR, "JSON inval midstate");
-			return false;
-		}
-
-		for(i = 0; i < midstate_size >> 2; i++)
-			work->midstate[i] = le32dec(work->midstate + i);
-	}
-
-	if(opt_algo == ALGO_HEAVY)
-	{
-		if(unlikely(!jobj_binary(val, "maxvote", &work->maxvote, sizeof(work->maxvote))))
-		{
-			work->maxvote = 2048;
-		}
-	}
-	else work->maxvote = 0;
 
 	for(i = 0; i < adata_sz; i++)
 		work->data[i] = le32dec(work->data + i);
@@ -592,11 +616,6 @@ static void calc_diff(struct work *work, int known)
 
 	swab256(rtarget, work->target);
 	data64 = (uint64_t *)(rtarget + 3); /* todo: index (3) can be tuned here */
-
-	if(opt_algo == ALGO_HEAVY)
-	{
-		data64 = (uint64_t *)(rtarget + 2);
-	}
 
 	d64 = swab64(*data64);
 	if(unlikely(!d64))
@@ -648,22 +667,30 @@ static int share_result(int result, const char *reason)
 	return 1;
 }
 
-static bool submit_upstream_work(CURL *curl, struct work *work)
+static bool submit_upstream_work(CURL *__restrict curl, struct work *__restrict work)
 {
-	json_t *val, *res, *reason;
-	bool stale_work = false;
 	char s[384];
 
 	/* discard if a newer block was received */
-	/*
-	stale_work = work->height && work->height < g_work.height;
-	if (have_stratum && !stale_work) {
-	pthread_mutex_lock(&g_work_lock);
-	if (strlen(work->job_id + 8))
-	stale_work = strcmp(work->job_id + 8, g_work.job_id + 8);
-	pthread_mutex_unlock(&g_work_lock);
+	bool stale_work = !send_stale && (work->height && work->height < g_work.height);
+	if(have_stratum && !stale_work)
+	{
+		pthread_mutex_lock(&g_work_lock);
+		if(strlen(work->job_id + 8))
+		{
+			if(!send_stale && strncmp(work->job_id + 8, g_work.job_id + 8, sizeof(g_work.job_id) - 8) != 0)
+				stale_work = true;
+			else
+				stale_work = false;
+		}
+		if(!send_stale && stale_work)
+		{
+			if(opt_debug)
+				applog(LOG_DEBUG, "outdated job %s, new %s", work->job_id + 8, g_work.job_id + 8);
+		}
+		pthread_mutex_unlock(&g_work_lock);
 	}
-	*/
+
 	if(!have_stratum && !stale_work && allow_gbt)
 	{
 		struct work wheight = { 0 };
@@ -678,20 +705,20 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 		}
 	}
 
-	if(stale_work)
+	if(!send_stale && stale_work)
 	{
-		if(opt_debug)
-			applog(LOG_WARNING, "stale work detected, discarding");
+//		if(opt_debug)
+			applog(LOG_WARNING, "stale share detected, discarding");
+		rejected_count++;
 		return true;
 	}
 	calc_diff(work, 0);
 
 	if(have_stratum)
 	{
-		uint32_t sent = 0;
+		time_t  sent = 0;
 		uint32_t ntime, nonce;
-		uint16_t nvote;
-		char *ntimestr, *noncestr, *xnonce2str, *nvotestr;
+		char *ntimestr, *noncestr, *xnonce2str;
 
 		if(opt_algo != ALGO_SIA)
 		{
@@ -717,13 +744,14 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 			sent = hashlog_already_submittted(work->job_id, nonce);
 		if(sent > 0)
 		{
-			sent = (uint32_t)time(NULL) - sent;
+			sent = time(NULL) - sent;
 			if(!opt_quiet)
 			{
-				applog(LOG_WARNING, "nonce %s was already sent %u seconds ago", noncestr, sent);
+				applog(LOG_WARNING, "nonce %s was already sent %u seconds ago", noncestr, (uint32_t)sent);
 				hashlog_dump_job(work->job_id);
 			}
 			free(noncestr);
+			free(ntimestr);
 			// prevent useless computing on some pools
 			g_work_time = 0;
 			restart_threads();
@@ -732,21 +760,8 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 
 		xnonce2str = bin2hex(work->xnonce2, work->xnonce2_len);
 
-		if(opt_algo == ALGO_HEAVY)
-		{
-			be16enc(&nvote, *((uint16_t*)&work->data[20]));
-			nvotestr = bin2hex((const uchar*)(&nvote), 2);
-			sprintf(s,
-					"{\"method\": \"mining.submit\", \"params\": [\"%s\", \"%s\", \"%s\", \"%s\", \"%s\", \"%s\"], \"id\":4}",
-					rpc_user, work->job_id + 8, xnonce2str, ntimestr, noncestr, nvotestr);
-			free(nvotestr);
-		}
-		else
-		{
-			sprintf(s,
-					"{\"method\": \"mining.submit\", \"params\": [\"%s\", \"%s\", \"%s\", \"%s\", \"%s\"], \"id\":4}",
-					rpc_user, work->job_id + 8, xnonce2str, ntimestr, noncestr);
-		}
+		sprintf(s, "{\"method\": \"mining.submit\", \"params\": [\"%s\", \"%s\", \"%s\", \"%s\", \"%s\"], \"id\":4}",
+			    rpc_user, work->job_id + 8, xnonce2str, ntimestr, noncestr);
 		free(xnonce2str);
 		free(ntimestr);
 		free(noncestr);
@@ -766,26 +781,9 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 	{
 
 		/* build hex string */
-		char *str = NULL;
-		int data_size;
-		switch(opt_algo)
-		{
-			case ALGO_NEO:
-				data_size = 84;
-				break;
-			case ALGO_BITC:
-				data_size = 168;
-				break;
-			default:
-				data_size = 128;
-				break;
-		}
-		if(opt_algo != ALGO_HEAVY && opt_algo != ALGO_MJOLLNIR)
-		{
-			for(int i = 0; i < (data_size >> 2); i++)
-				le32enc(work->data + i, work->data[i]);
-		}
-		str = bin2hex((uchar*)work->data, data_size);
+		for(int i = 0; i < (work->datasize >> 2); i++)
+			le32enc(work->data + i, work->data[i]);
+		char* str = bin2hex((uchar*)work->data, work->datasize);
 		if(unlikely(!str))
 		{
 			applog(LOG_ERR, "submit_upstream_work OOM");
@@ -793,20 +791,19 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 		}
 
 		/* build JSON-RPC request */
-		sprintf(s,
-				"{\"method\": \"getwork\", \"params\": [\"%s\"], \"id\":4}\r\n",
+		sprintf(s, "{\"method\": \"getwork\", \"params\": [\"%s\"], \"id\":4}\r\n",
 				str);
 
 		/* issue JSON-RPC request */
-		val = json_rpc_call(curl, rpc_url, rpc_userpass, s, false, false, NULL);
+		json_t* val = json_rpc_call(curl, rpc_url, rpc_userpass, s, false, false, NULL);
 		if(unlikely(!val))
 		{
 			applog(LOG_ERR, "submit_upstream_work json_rpc_call failed");
 			return false;
 		}
 
-		res = json_object_get(val, "result");
-		reason = json_object_get(val, "reject-reason");
+		json_t* res = json_object_get(val, "result");
+		json_t* reason = json_object_get(val, "reject-reason");
 		if(!share_result(json_is_true(res), reason ? json_string_value(reason) : NULL))
 		{
 			if(check_dups)
@@ -861,6 +858,13 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 						   algo_names[opt_algo], work->height);
 				}
 				g_work.height = work->height;
+				if(!have_stratum)
+				{
+					double x = expectedblocktime(work->target);
+					if(x != 0.0)
+						applog(LOG_BLUE, "50%% chance to find a block in about %.2f days", x);
+				}
+
 			}
 		}
 	}
@@ -931,7 +935,12 @@ static bool get_mininginfo(CURL *curl, struct work *work)
 		// "networkhashps": 56475980
 		if(res)
 		{
-			json_t *key = json_object_get(res, "difficulty");
+			json_t *key = json_object_get(res, "powdifficulty");
+			if(key && json_is_real(key))
+			{
+				global_diff = json_real_value(key);
+			}
+			key = json_object_get(res, "difficulty");
 			if(key && json_is_real(key))
 			{
 				global_diff = json_real_value(key);
@@ -950,6 +959,26 @@ static bool get_mininginfo(CURL *curl, struct work *work)
 	}
 	json_decref(val);
 	return true;
+}
+
+// time (in days) for a 50% chance to find a block
+double expectedblocktime(const uint32_t *target)
+{
+	double x = 0.0;
+	if(global_hashrate == 0)
+		return 0;
+	else
+	{
+		for(int i = 0; i < 8; i++)
+		{
+			x *= 4294967296.0;
+			x += target[7 - i];
+		}
+		if(x != 0.0)
+			return 115792089237316195423570985008687907853269984665640564039457584007913129639935.0 / x / (double)global_hashrate / 86400.0;
+		else
+			return 0.0;
+	}
 }
 
 static const char *rpc_req =
@@ -1002,7 +1031,12 @@ static void workio_cmd_free(struct workio_cmd *wc)
 	switch(wc->cmd)
 	{
 	case WC_SUBMIT_WORK:
-		aligned_free(wc->u.work);
+		free(wc->work);
+		if(errno)
+		{
+			applog(LOG_ERR, "free() error in workio_cmd_free: %s", strerror(errno));
+			errno = 0;
+		}
 		break;
 	default: /* do nothing */
 		break;
@@ -1010,6 +1044,11 @@ static void workio_cmd_free(struct workio_cmd *wc)
 
 	memset(wc, 0, sizeof(*wc));	/* poison */
 	free(wc);
+	if(errno)
+	{
+		applog(LOG_ERR, "free() error in workio_cmd_free: %s", strerror(errno));
+		errno = 0;
+	}
 }
 
 static bool workio_get_work(struct workio_cmd *wc, CURL *curl)
@@ -1017,7 +1056,7 @@ static bool workio_get_work(struct workio_cmd *wc, CURL *curl)
 	struct work *ret_work;
 	int failures = 0;
 
-	ret_work = (struct work*)aligned_calloc(sizeof(*ret_work));
+	ret_work = (struct work*)calloc(1, sizeof(*ret_work));
 	if(!ret_work)
 		return false;
 
@@ -1027,7 +1066,7 @@ static bool workio_get_work(struct workio_cmd *wc, CURL *curl)
 		if(unlikely((opt_retries >= 0) && (++failures > opt_retries)))
 		{
 			applog(LOG_ERR, "json_rpc_call failed, terminating workio thread");
-			aligned_free(ret_work);
+			free(ret_work);
 			return false;
 		}
 
@@ -1039,7 +1078,7 @@ static bool workio_get_work(struct workio_cmd *wc, CURL *curl)
 
 	/* send work to requesting thread */
 	if(!tq_push(wc->thr->q, ret_work))
-		aligned_free(ret_work);
+		free(ret_work);
 
 	return true;
 }
@@ -1049,7 +1088,7 @@ static bool workio_submit_work(struct workio_cmd *wc, CURL *curl)
 	int failures = 0;
 
 	/* submit solution to bitcoin via JSON-RPC */
-	while(!submit_upstream_work(curl, wc->u.work))
+	while(!submit_upstream_work(curl, wc->work))
 	{
 		if(unlikely((opt_retries >= 0) && (++failures > opt_retries)))
 		{
@@ -1070,22 +1109,20 @@ static bool workio_submit_work(struct workio_cmd *wc, CURL *curl)
 static void *workio_thread(void *userdata)
 {
 	struct thr_info *mythr = (struct thr_info*)userdata;
-	CURL *curl;
 	bool ok = true;
 
-	curl = curl_easy_init();
+	CURL* curl = curl_easy_init();
 	if(unlikely(!curl))
 	{
 		applog(LOG_ERR, "CURL initialization failed");
 		return NULL;
 	}
 
-	while(ok)
+	while(ok && !stop_mining)
 	{
-		struct workio_cmd *wc;
 
 		/* wait for workio_cmd sent to us, on our queue */
-		wc = (struct workio_cmd *)tq_pop(mythr->q, NULL);
+		struct workio_cmd* wc = (struct workio_cmd *)tq_pop(mythr->q, NULL);
 		if(!wc)
 		{
 			ok = false;
@@ -1093,7 +1130,7 @@ static void *workio_thread(void *userdata)
 		}
 
 		/* process workio_cmd */
-		switch(wc->cmd)
+		switch (wc->cmd)
 		{
 		case WC_GET_WORK:
 			ok = workio_get_work(wc, curl);
@@ -1101,7 +1138,6 @@ static void *workio_thread(void *userdata)
 		case WC_SUBMIT_WORK:
 			ok = workio_submit_work(wc, curl);
 			break;
-
 		default:		/* should never happen */
 			ok = false;
 			break;
@@ -1111,7 +1147,6 @@ static void *workio_thread(void *userdata)
 	}
 
 	tq_freeze(mythr->q);
-	curl_easy_cleanup(curl);
 
 	return NULL;
 }
@@ -1131,6 +1166,7 @@ static bool get_work(struct thr_info *thr, struct work *work)
 			work->data[20] = 0x80000000;
 			work->data[31] = 0x00000280;
 			memset(work->target, 0x00, sizeof(work->target));
+			work->datasize = 128;
 		}
 		else
 		{
@@ -1142,14 +1178,18 @@ static bool get_work(struct thr_info *thr, struct work *work)
 			memset(work->data + 11, 0x55, 4);
 			memset(work->data + 12, 0x55, 32);
 			memset(work->target, 0x00, sizeof(work->target));
+			work->datasize = 128;
 		}
 		return true;
 	}
 
 	/* fill out work request message */
-	wc = (struct workio_cmd *)calloc(1, sizeof(*wc));
-	if(!wc)
-		return false;
+	wc = (struct workio_cmd *)calloc(1, sizeof(struct workio_cmd));
+	if(wc == NULL)
+	{
+		applog(LOG_ERR, "Out of memory!");
+		proper_exit(EXIT_FAILURE);
+	}
 
 	wc->cmd = WC_GET_WORK;
 	wc->thr = thr;
@@ -1168,36 +1208,44 @@ static bool get_work(struct thr_info *thr, struct work *work)
 
 	/* copy returned work into storage provided by caller */
 	memcpy(work, work_heap, sizeof(*work));
-	aligned_free(work_heap);
+	free(work_heap);
 
 	return true;
 }
 
 static bool submit_work(struct thr_info *thr, const struct work *work_in)
 {
-	struct workio_cmd *wc;
+
 	/* fill out work request message */
-	wc = (struct workio_cmd *)calloc(1, sizeof(*wc));
-	if(!wc)
-		return false;
+	struct workio_cmd* wc = (struct workio_cmd *)calloc(1, sizeof(struct workio_cmd));
+	if(wc == NULL)
+	{
+		applog(LOG_ERR, "Out of memory!");
+		proper_exit(EXIT_FAILURE);
+	}
+	else
+	{
+		wc->work = (struct work*)calloc(1, sizeof(*work_in));
+		if (wc->work == NULL)
+		{
+			applog(LOG_ERR, "Out of memory!");
+			proper_exit(EXIT_FAILURE);
+		}
+		else
+		{
+			wc->cmd = WC_SUBMIT_WORK;
+			wc->thr = thr;
+			memcpy(wc->work, work_in, sizeof(*work_in));
 
-	wc->u.work = (struct work *)aligned_calloc(sizeof(*work_in));
-	if(!wc->u.work)
-		goto err_out;
-
-	wc->cmd = WC_SUBMIT_WORK;
-	wc->thr = thr;
-	memcpy(wc->u.work, work_in, sizeof(*work_in));
-
-	/* send solution to workio thread */
-	if(!tq_push(thr_info[work_thr_id].q, wc))
-		goto err_out;
-
+			/* send solution to workio thread */
+			if (!tq_push(thr_info[work_thr_id].q, wc))
+			{
+				workio_cmd_free(wc);
+				return false;
+			}
+		}
+	}
 	return true;
-
-err_out:
-	workio_cmd_free(wc);
-	return false;
 }
 
 static bool stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
@@ -1226,10 +1274,6 @@ static bool stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 	/* Generate merkle root */
 	switch(opt_algo)
 	{
-		case ALGO_HEAVY:
-		case ALGO_MJOLLNIR:
-			heavycoin_hash(merkle_root, sctx->job.coinbase, (int)sctx->job.coinbase_size);
-			break;
 		case ALGO_FUGUE256:
 		case ALGO_GROESTL:
 		case ALGO_KECCAK:
@@ -1252,28 +1296,27 @@ static bool stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 
 	for(i = 0; i < sctx->job.merkle_count; i++)
 	{
-		if(opt_algo != ALGO_SIA)
-		{
-			memcpy(merkle_root + 32, sctx->job.merkle[i], 32);
-			if(opt_algo == ALGO_HEAVY || opt_algo == ALGO_MJOLLNIR)
-				heavycoin_hash(merkle_root, merkle_root, 64);
-			else
-				sha256d(merkle_root, merkle_root, 64);
-		}
-		else
+		if(opt_algo == ALGO_SIA)
 		{
 			memcpy(merkle_root + 1, sctx->job.merkle[i], 32);
 			siahash(merkle_root, 65, merkle_root + 33);
+		}
+		else
+		{
+			memcpy(merkle_root + 32, sctx->job.merkle[i], 32);
+			sha256d(merkle_root, merkle_root, 64);
 		}
 	}
 
 	/* Increment extranonce2 */
 	if(opt_extranonce)
 	{
-		for(i = 0; i < (int)sctx->xnonce2_size && !++sctx->job.xnonce2[i]; i++);
+		i = 0;
+		do
 		{
 			sctx->job.xnonce2[i]++;
-		}
+			i++;
+		} while(i < (int)sctx->xnonce2_size && sctx->job.xnonce2[i - 1] == 0);
 	}
 	static uint32_t highnonce = 0;
 	if(opt_algo == ALGO_SIA)
@@ -1290,15 +1333,8 @@ static bool stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 			work->data[9 + i] = be32dec((uint32_t *)merkle_root + i);
 		work->data[17] = le32dec(sctx->job.ntime);
 		work->data[18] = le32dec(sctx->job.nbits);
-
-		if(opt_algo == ALGO_MJOLLNIR || opt_algo == ALGO_HEAVY)
-		{
-			for(i = 0; i < 20; i++)
-				work->data[i] = be32dec((uint32_t *)&work->data[i]);
-		}
-
 		work->data[20] = 0x80000000;
-		work->data[31] = (opt_algo == ALGO_MJOLLNIR) ? 0x000002A0 : 0x00000280;
+		work->data[31] = 0x00000280;
 	}
 	else
 	{
@@ -1312,15 +1348,6 @@ static bool stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 			work->data[12 + i] = le32dec((uint32_t *)(merkle_root + 33) + i);
 	}
 
-	// HeavyCoin (vote / reward)
-	if(opt_algo == ALGO_HEAVY)
-	{
-		work->maxvote = 2048;
-		uint16_t *ext = (uint16_t*)(&work->data[20]);
-		ext[0] = opt_vote;
-		ext[1] = be16dec(sctx->job.nreward);
-		// applog(LOG_DEBUG, "DEBUG: vote=%hx reward=%hx", ext[0], ext[1]);
-	}
 	pthread_mutex_unlock(&sctx->work_lock);
 	if(opt_debug)
 	{
@@ -1338,25 +1365,21 @@ static bool stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 
 	switch(opt_algo)
 	{
-	case ALGO_JACKPOT:
-	case ALGO_NEO:
-		diff_to_target(work->target, sctx->job.diff / (65536.0 * opt_difficulty));
-		break;
-	case ALGO_DMD_GR:
-	case ALGO_FRESH:
-	case ALGO_FUGUE256:
-	case ALGO_GROESTL:
-		diff_to_target(work->target, sctx->job.diff / (256.0 * opt_difficulty));
-		break;
-	case ALGO_KECCAK:
-		case ALGO_LYRA2v2:
-		diff_to_target(work->target, sctx->job.diff / (256.0 * opt_difficulty));
-		break;
-			diff_to_target(work->target, sctx->job.diff / (128.0 * opt_difficulty));
+		case ALGO_JACKPOT:
+		case ALGO_NEO:
+			diff_to_target(work->target, sctx->job.diff / (65536.0 * opt_difficulty));
 			break;
-
-	default:
-		diff_to_target(work->target, sctx->job.diff / opt_difficulty);
+		case ALGO_DMD_GR:
+		case ALGO_FRESH:
+		case ALGO_FUGUE256:
+		case ALGO_GROESTL:
+		case ALGO_KECCAK:
+		case ALGO_LYRA2v2:
+		case ALGO_LYRA2v3:
+			diff_to_target(work->target, sctx->job.diff / (256.0 * opt_difficulty));
+			break;
+		default:
+			diff_to_target(work->target, sctx->job.diff / opt_difficulty);
 	}
 	return true;
 }
@@ -1374,10 +1397,11 @@ static void *miner_thread(void *userdata)
 {
 	struct thr_info *mythr = (struct thr_info *)userdata;
 	int thr_id = mythr->id;
+	struct cgpu_info *cgpu = &thr_info[thr_id].gpu;
 	struct work work;
 	uint64_t loopcnt = 0;
 	uint32_t max_nonce;
-	uint32_t end_nonce = UINT32_MAX / opt_n_threads * (thr_id + 1) - (thr_id + 1);
+	uint64_t end_nonce = 0x100000000ull / opt_n_threads * (thr_id + 1) - 1;
 	bool extrajob = false;
 	char s[16];
 	int rc = 0;
@@ -1438,15 +1462,14 @@ static void *miner_thread(void *userdata)
 		}
 	}
 
-	while(1)
+	get_cuda_arch(&cuda_arch[thr_id]);
+
+	while(!stop_mining)
 	{
 		// &work.data[19]
 		int wcmplen;
 		switch(opt_algo)
 		{
-			case ALGO_BITC:
-				wcmplen = 140;
-				break;
 			case ALGO_SIA:
 				wcmplen = 80;
 				break;
@@ -1467,24 +1490,28 @@ static void *miner_thread(void *userdata)
 
 		if(have_stratum)
 		{
+			pthread_mutex_lock(&g_work_lock);
 			if(loopcnt == 0 || time(NULL) >= (g_work_time + opt_scantime))
 				extrajob = true;
-			pthread_mutex_lock(&g_work_lock);
-			if(nonceptr[0] >= end_nonce - 0x00010000 || extrajob)
+			if(nonceptr[0] >= end_nonce - 0x00004000 || extrajob)
 			{
 				extrajob = false;
-				while(!stratum_gen_work(&stratum, &g_work))
+				int loop = 0;
+				while(!stratum_gen_work(&stratum, &g_work) && !stop_mining)
 				{
-					if(opt_debug)
-						applog(LOG_WARNING, "thread %d: waiting for work", thr_id);
+					pthread_mutex_unlock(&g_work_lock);
+					if(loop > 0)
+						applog(LOG_WARNING, "GPU #%d: waiting for data", device_map[thr_id]);
 					sleep(3);
+					loop++;
+					pthread_mutex_lock(&g_work_lock);
 				}
 			}
 		}
 		else
 		{
 			pthread_mutex_lock(&g_work_lock);
-			if((time(NULL) - g_work_time) >= scan_time || nonceptr[0] >= (end_nonce - 0x10000))
+			if((time(NULL) - g_work_time) >= scan_time || nonceptr[0] >= (end_nonce - 0x00004000))
 			{
 				if(opt_debug && g_work_time && !opt_quiet)
 					applog(LOG_DEBUG, "work time %u/%us nonce %x/%x", time(NULL) - g_work_time,
@@ -1540,7 +1567,7 @@ static void *miner_thread(void *userdata)
 			if(opt_debug && opt_algo == ALGO_SIA)
 				applog(LOG_DEBUG, "thread %d: high nonce = %08X", thr_id, work.data[9]);
 			memcpy(&work, &g_work, sizeof(struct work));
-			nonceptr[0] = (UINT32_MAX / opt_n_threads) * thr_id; // 0 if single thr
+			nonceptr[0] = (uint32_t)((0x100000000ull / opt_n_threads) * thr_id); // 0 if single thr
 		}
 		else
 		{
@@ -1554,7 +1581,7 @@ static void *miner_thread(void *userdata)
 		if(have_stratum)
 			max64time = LP_SCANTIME;
 		else
-			max64time = (uint32_t)max(1, scan_time + g_work_time - time(NULL));
+			max64time = (uint32_t)max((time_t)1, (time_t)scan_time + g_work_time - time(NULL));
 
 		max64 = max64time * (uint32_t)thr_hashrates[thr_id];
 
@@ -1568,9 +1595,6 @@ static void *miner_thread(void *userdata)
 			case ALGO_BLAKE:
 			case ALGO_SIA:
 				minmax = 260000000 * max64time;
-				break;
-			case ALGO_BITC:
-				minmax = 95000000 * max64time;
 				break;
 			case ALGO_BLAKECOIN:
 			case ALGO_VANILLA:
@@ -1608,6 +1632,7 @@ static void *miner_thread(void *userdata)
 				minmax = 1000000 * max64time;
 				break;
 			case ALGO_LYRA2v2:
+			case ALGO_LYRA2v3:
 				minmax = 1900000 * max64time;
 				break;
 			case ALGO_NEO:
@@ -1619,7 +1644,7 @@ static void *miner_thread(void *userdata)
 		max64 = max(minmax, max64);
 
 		// we can't scan more than uint capacity
-		max64 = min(UINT32_MAX, max64);
+		max64 = min((uint64_t)0xffffffff, max64);
 		start_nonce = nonceptr[0];
 
 		/* never let small ranges at end */
@@ -1627,7 +1652,7 @@ static void *miner_thread(void *userdata)
 			end_nonce = UINT32_MAX;
 
 		if((max64 + start_nonce) >= end_nonce)
-			max_nonce = end_nonce;
+			max_nonce = (uint32_t)end_nonce;
 		else
 			max_nonce = (uint32_t)(max64 + start_nonce);
 
@@ -1646,23 +1671,26 @@ static void *miner_thread(void *userdata)
 			databackup = nonceptr[2];
 		else
 			databackup = nonceptr[12];
+
+		if(!stop_mining)
+			mining_has_stopped[thr_id] = false;
+		else
+		{
+			mining_has_stopped[thr_id] = true;
+			pthread_exit(nullptr);
+		}
+		if(cgpu && loopcnt > 1)
+		{
+			cgpu->monitor.sampling_flag = true;
+		}
+
 		/* scan nonces for a proof-of-work hash */
 		switch(opt_algo)
 		{
 
-		case ALGO_HEAVY:
-			rc = scanhash_heavy(thr_id, work.data, work.target,
-								max_nonce, &hashes_done, work.maxvote, HEAVYCOIN_BLKHDR_SZ);
-			break;
-
 		case ALGO_KECCAK:
 			rc = scanhash_keccak256(thr_id, work.data, work.target,
 									max_nonce, &hashes_done);
-			break;
-
-		case ALGO_MJOLLNIR:
-			rc = scanhash_heavy(thr_id, work.data, work.target,
-								max_nonce, &hashes_done, 0, MNR_BLKHDR_SZ);
 			break;
 
 		case ALGO_DEEP:
@@ -1743,6 +1771,11 @@ static void *miner_thread(void *userdata)
 				max_nonce, &hashes_done);
 			break;
 
+		case ALGO_LYRA2v3:
+			rc = scanhash_lyra2v3(thr_id, work.data, work.target,
+								  max_nonce, &hashes_done);
+			break;
+
 		case ALGO_NIST5:
 			rc = scanhash_nist5(thr_id, work.data, work.target,
 								max_nonce, &hashes_done);
@@ -1799,11 +1832,10 @@ static void *miner_thread(void *userdata)
 			break;
 
 		case ALGO_NEO:
-			rc = scanhash_neoscrypt(have_stratum, thr_id, work.data, work.target, max_nonce, &hashes_done);
-			break;
-
-		case ALGO_BITC:
-			rc = scanhash_bitcredit(thr_id, work.data, work.target, work.midstate, max_nonce, &hashes_done);
+			if(!have_stratum && work.datasize == 128)
+				rc = scanhash_neoscrypt(true, thr_id, work.data, work.target, max_nonce, &hashes_done);
+			else
+				rc = scanhash_neoscrypt(have_stratum, thr_id, work.data, work.target, max_nonce, &hashes_done);
 			break;
 
 		case ALGO_SIA:
@@ -1814,7 +1846,7 @@ static void *miner_thread(void *userdata)
 			/* should never happen */
 			goto out;
 		}
-
+		mining_has_stopped[thr_id] = true;
 		/* record scanhash elapsed time */
 		gettimeofday(&tv_end, NULL);
 		if(rc && opt_debug)
@@ -1831,19 +1863,26 @@ static void *miner_thread(void *userdata)
 		}
 		timeval_subtract(&diff, &tv_end, &tv_start);
 
+		if(cgpu && diff.tv_sec)
+		{ // stop monitoring
+			cgpu->monitor.sampling_flag = false;
+		}
+
 		if(diff.tv_sec > 0 || (diff.tv_sec == 0 && diff.tv_usec>2000)) // avoid totally wrong hash rates
 		{
 			double dtime = (double)diff.tv_sec + 1e-6 * diff.tv_usec;
 
 			/* hashrate factors for some algos */
-			double rate_factor = 1.0;
+			double rate_factor;
 			switch(opt_algo)
 			{
-			case ALGO_JACKPOT:
-			case ALGO_QUARK:
-				// to stay comparable to other ccminer forks or pools
-				rate_factor = 0.5;
-				break;
+				case ALGO_JACKPOT:
+				case ALGO_QUARK:
+					// to stay comparable to other ccminer forks or pools
+					rate_factor = 0.5;
+					break;
+				default:
+					rate_factor = 1.0;
 			}
 
 			/* store thread hashrate */
@@ -1868,7 +1907,7 @@ static void *miner_thread(void *userdata)
 		if(check_dups)
 			hashlog_remember_scan_range(&work);
 
-		if(!opt_quiet && (opt_algo == ALGO_BITC) ? (loopcnt % 10 == 1) : (loopcnt>0))
+		if(!opt_quiet && loopcnt > 0)
 		{
 			double hashrate;
 
@@ -1924,23 +1963,12 @@ static void *miner_thread(void *userdata)
 			}
 
 			// second nonce found, submit too (on pool only!)
-			if(opt_algo != ALGO_SIA)
+			if(rc > 1)
 			{
-				if(rc > 1 && nonceptr[2])
-				{
-					nonceptr[0] = found2;
-					if(!submit_work(mythr, &work))
-						break;
-				}
+				nonceptr[0] = found2;
+				if(!submit_work(mythr, &work))
+					break;
 			}
-			else
-				if(rc > 1 && nonceptr[12])
-				{
-					nonceptr[0] = found2;
-					if(!submit_work(mythr, &work))
-						break;
-				}
-
 		}
 		nonceptr[0] = start_nonce + hashes_done;
 
@@ -1987,15 +2015,18 @@ start:
 			need_slash = true;
 
 		lp_url = (char*)malloc(strlen(rpc_url) + strlen(copy_start) + 2);
-		if(!lp_url)
-			goto out;
+		if(lp_url == NULL)
+		{
+			applog(LOG_ERR, "Out of memory!");
+			proper_exit(EXIT_FAILURE);
+		}
 
 		sprintf(lp_url, "%s%s%s", rpc_url, need_slash ? "/" : "", copy_start);
 	}
 
 	applog(LOG_INFO, "Long-polling enabled on %s", lp_url);
 
-	while(1)
+	while(!stop_mining)
 	{
 		json_t *val, *soval;
 		int err;
@@ -2045,8 +2076,6 @@ out:
 	free(hdr_path);
 	free(lp_url);
 	tq_freeze(mythr->q);
-	if(curl)
-		curl_easy_cleanup(curl);
 
 	return NULL;
 }
@@ -2101,8 +2130,8 @@ static void *stratum_thread(void *userdata)
 	if(!stratum.url)
 		goto out;
 	applog(LOG_BLUE, "Starting Stratum on %s", stratum.url);
-
-	while(1)
+	stratum.curl = NULL;
+	while(!stop_mining)
 	{
 		int failures = 0;
 
@@ -2113,7 +2142,7 @@ static void *stratum_thread(void *userdata)
 			applog(LOG_DEBUG, "stratum connection reset");
 		}
 
-		while(!stratum.curl)
+		while(!stratum.curl && !stop_mining)
 		{
 			pthread_mutex_lock(&g_work_lock);
 			g_work_time = 0;
@@ -2145,9 +2174,9 @@ static void *stratum_thread(void *userdata)
 			g_work_time = time(NULL);
 			if(stratum.job.clean)
 			{
-				if(!opt_quiet)
-					applog(LOG_BLUE, "%s %s block %d", short_url, algo_names[opt_algo],
-					stratum.job.height);
+//				if(!opt_quiet)
+//					applog(LOG_BLUE, "%s %s block %d", short_url, algo_names[opt_algo],
+//					stratum.job.height);
 				restart_threads();
 				if(check_dups)
 					hashlog_purge_old();
@@ -2161,7 +2190,7 @@ static void *stratum_thread(void *userdata)
 			pthread_mutex_unlock(&g_work_lock);
 		}
 
-		if(!stratum_socket_full(&stratum, 120))
+		if(!stratum_socket_full(&stratum, opt_timeout))
 		{
 			applog(LOG_ERR, "Stratum connection timed out");
 			s = NULL;
@@ -2180,6 +2209,8 @@ static void *stratum_thread(void *userdata)
 	}
 
 out:
+	// call proper_exit() because the main thread only waits for the workio thread
+	proper_exit(EXIT_FAILURE);
 	return NULL;
 }
 
@@ -2195,13 +2226,13 @@ static void show_version_and_exit(void)
 		   PTW32_VERSION_STRING,
 #endif
 		   curl_version());
-	proper_exit(0);
+	proper_exit(EXIT_SUCCESS);
 }
 
 static void show_usage_and_exit(int status)
 {
 	if(status)
-		fprintf(stderr, "Try `" PROGRAM_NAME " --help' for more information.\n");
+		fprintf(stdout, "Try `" PROGRAM_NAME " --help' for more information.\n");
 	else
 		printf(usage);
 	proper_exit(status);
@@ -2225,8 +2256,6 @@ static void parse_arg(int key, char *arg)
 				break;
 			}
 		}
-		if(i == ARRAY_SIZE(algo_names))
-			show_usage_and_exit(1);
 		break;
 	case 'b':
 		p = strstr(arg, ":");
@@ -2268,7 +2297,7 @@ static void parse_arg(int key, char *arg)
 		if(!json_is_object(opt_config))
 		{
 			applog(LOG_ERR, "JSON decode of %s failed", arg);
-			proper_exit(1);
+			exit(1);
 		}
 		break;
 	}
@@ -2276,7 +2305,11 @@ static void parse_arg(int key, char *arg)
 		d = atof(arg);
 		v = (uint32_t)d;
 		if(v < 0 || v > 31)
-			show_usage_and_exit(1);
+		{
+			printf("Intensity value out of range\n");
+			printf("Try --help for more information!\n");
+			exit(EXIT_FAILURE);
+		}
 		else
 		{
 			int n = 0;
@@ -2287,11 +2320,11 @@ static void parse_arg(int key, char *arg)
 			{
 				d = atof(pch);
 				v = (uint32_t)d;
-				if(v > 7)
+				if(v > 8)
 				{ /* 0 = default */
 					if((d - v) > 0.0)
 					{
-						uint32_t adds = (uint32_t)floor((d - v) * (1 << (v - 8))) * 256;
+						uint32_t adds = (uint32_t)floor((d - v) * (1 << v));
 						gpus_intensity[n] = (1 << v) + adds;
 						applog(LOG_INFO, "Adding %u threads to intensity %u, %u cuda threads",
 							   adds, v, gpus_intensity[n]);
@@ -2303,6 +2336,8 @@ static void parse_arg(int key, char *arg)
 							   v, gpus_intensity[n]);
 					}
 				}
+				else
+					applog(LOG_WARNING, "invalid intensity, using default intensity");
 				last = gpus_intensity[n];
 				n++;
 				pch = strpbrk(pch, ",");
@@ -2324,7 +2359,7 @@ static void parse_arg(int key, char *arg)
 		break;
 	case 'n': /* --ndevs */
 		cuda_print_devices();
-		proper_exit(0);
+		exit(0);
 		break;
 	case 'q':
 		opt_quiet = true;
@@ -2339,38 +2374,47 @@ static void parse_arg(int key, char *arg)
 	case 'r':
 		v = atoi(arg);
 		if(v < -1 || v > 9999)	/* sanity check */
-			show_usage_and_exit(1);
+		{
+			printf("Value for number of retries is out of range\n");
+			exit(EXIT_FAILURE);
+		}
 		opt_retries = v;
 		break;
 	case 'R':
 		v = atoi(arg);
 		if(v < 1 || v > 9999)	/* sanity check */
-			show_usage_and_exit(1);
+		{
+			printf("Value for retry pause is out of range\n");
+			exit(EXIT_FAILURE);
+		}
 		opt_fail_pause = v;
 		break;
 	case 's':
 		v = atoi(arg);
 		if(v < 1 || v > 9999)	/* sanity check */
-			show_usage_and_exit(1);
+		{
+			printf("Value for scantime is out of range\n");
+			exit(EXIT_FAILURE);
+		}
 		opt_scantime = v;
 		break;
 	case 'T':
 		v = atoi(arg);
 		if(v < 1 || v > 99999)	/* sanity check */
-			show_usage_and_exit(1);
+		{
+			printf("Value for timeout is out of range\n");
+			exit(EXIT_FAILURE);
+		}
 		opt_timeout = v;
 		break;
 	case 't':
 		v = atoi(arg);
 		if(v < 1 || v > 9999)	/* sanity check */
-			show_usage_and_exit(1);
+		{
+			printf("Value for number of threads is out of range\n");
+			exit(EXIT_FAILURE);
+		}
 		opt_n_threads = v;
-		break;
-	case 'v':
-		v = atoi(arg);
-		if(v < 0 || v > 8192)	/* sanity check */
-			show_usage_and_exit(1);
-		opt_vote = (uint16_t)v;
 		break;
 	case 'u':
 		free(rpc_user);
@@ -2382,7 +2426,10 @@ static void parse_arg(int key, char *arg)
 		{
 			if(strncasecmp(arg, "http://", 7) && strncasecmp(arg, "https://", 8) &&
 			   strncasecmp(arg, "stratum+tcp://", 14))
-			   show_usage_and_exit(1);
+			{
+				printf("URL error\n");
+				exit(EXIT_FAILURE);
+			}
 			free(rpc_url);
 			rpc_url = strdup(arg);
 			short_url = &rpc_url[(p - arg) + 3];
@@ -2390,9 +2437,17 @@ static void parse_arg(int key, char *arg)
 		else
 		{
 			if(!strlen(arg) || *arg == '/')
-				show_usage_and_exit(1);
+			{
+				printf("URL error\n");
+				exit(EXIT_FAILURE);
+			}
 			free(rpc_url);
 			rpc_url = (char*)malloc(strlen(arg) + 8);
+			if(rpc_url == NULL)
+			{
+				applog(LOG_ERR, "Out of memory!\n");
+				exit(1);
+			}
 			sprintf(rpc_url, "http://%s", arg);
 			short_url = &rpc_url[7];
 		}
@@ -2409,6 +2464,11 @@ static void parse_arg(int key, char *arg)
 				rpc_userpass = strdup(ap);
 				free(rpc_user);
 				rpc_user = (char*)calloc(sp - ap + 1, 1);
+				if(rpc_user == NULL)
+				{
+					applog(LOG_ERR, "Out of memory!\n");
+					proper_exit(EXIT_FAILURE);
+				}
 				strncpy(rpc_user, ap, sp - ap);
 				free(rpc_pass);
 				rpc_pass = strdup(sp + 1);
@@ -2426,11 +2486,19 @@ static void parse_arg(int key, char *arg)
 	case 'O':			/* --userpass */
 		p = strchr(arg, ':');
 		if(!p)
-			show_usage_and_exit(1);
+		{
+			printf("username:password error\n");
+			exit(EXIT_FAILURE);
+		}
 		free(rpc_userpass);
 		rpc_userpass = strdup(arg);
 		free(rpc_user);
 		rpc_user = (char*)calloc(p - arg + 1, 1);
+		if(rpc_user == NULL)
+		{
+			applog(LOG_ERR, "Out of memory!\n");
+			proper_exit(EXIT_FAILURE);
+		}
 		strncpy(rpc_user, arg, p - arg);
 		free(rpc_pass);
 		rpc_pass = strdup(p + 1);
@@ -2466,7 +2534,7 @@ static void parse_arg(int key, char *arg)
 		break;
 	case 1006:
 		print_hash_tests();
-		proper_exit(0);
+		proper_exit(EXIT_SUCCESS);
 		break;
 	case 1003:
 		want_longpoll = false;
@@ -2498,27 +2566,57 @@ static void parse_arg(int key, char *arg)
 	case 1021:
 		v = atoi(arg);
 		if(v < 0 || v > 5)	/* sanity check */
-			show_usage_and_exit(1);
+		{
+			printf("cpu priority value out of range\n");
+			exit(EXIT_FAILURE);
+		}
 		opt_priority = v;
 		break;
 	case 1022:
 		opt_verify = false;
 		break;
+	case 1025: // cuda-schedule
+		switch(atoi(arg))
+		{
+			case 0:
+				cudaschedule = cudaDeviceScheduleBlockingSync;
+				break;
+			case 1:
+				cudaschedule = cudaDeviceScheduleSpin;
+				break;
+			case 2:
+				cudaschedule = cudaDeviceScheduleYield;
+				break;
+			default:
+				applog(LOG_WARNING, "Warning: invalid value for --cuda-schedule option");
+				cudaschedule = cudaDeviceScheduleBlockingSync;
+		}
+		break;
 	case 'd': // CB
 	{
+		bool gpu[32] = {false};
 		int ngpus = cuda_num_devices();
 		char * pch = strtok(arg, ",");
 		opt_n_threads = 0;
 		while(pch != NULL)
 		{
-			if(pch[0] >= '0' && pch[0] <= '9' && pch[1] == '\0')
+			if(pch[0] >= '0' && pch[0] <= '9')
 			{
-				if(atoi(pch) < ngpus)
-					device_map[opt_n_threads++] = atoi(pch);
+				i = atoi(pch);
+				if(i < ngpus && gpu[i] == false)
+				{
+					gpu[i] = true;
+					device_map[opt_n_threads++] = i;
+				}
 				else
 				{
-					applog(LOG_ERR, "Non-existant CUDA device #%d specified in -d option", atoi(pch));
-					proper_exit(1);
+					if(gpu[i] == true)
+						applog(LOG_WARNING, "Selected gpu #%d more than once in -d option. This is not supported.\n", i);
+					else
+					{
+						applog(LOG_ERR, "Non-existant CUDA device #%d specified in -d option\n", i);
+						exit(1);
+					}
 				}
 			}
 			else
@@ -2528,8 +2626,8 @@ static void parse_arg(int key, char *arg)
 					device_map[opt_n_threads++] = device;
 				else
 				{
-					applog(LOG_ERR, "Non-existant CUDA device '%s' specified in -d option", pch);
-					proper_exit(1);
+					applog(LOG_ERR, "Non-existant CUDA device '%s' specified in -d option\n", pch);
+					exit(1);
 				}
 			}
 			// set number of active gpus
@@ -2540,14 +2638,20 @@ static void parse_arg(int key, char *arg)
 	break;
 	case 'f': // CH - Divisor for Difficulty
 		d = atof(arg);
-		if(d == 0)	/* sanity check */
-			show_usage_and_exit(1);
+		if(d <= 0.0)	/* sanity check */
+		{
+			printf("Error: diff factor can't be 0 or negative\n");
+			exit(EXIT_FAILURE);
+		}
 		opt_difficulty = d;
 		break;
 	case 'm': // --diff-multiplier
 		d = atof(arg);
-		if(d <= 0.)
-			show_usage_and_exit(1);
+		if(d <= 0.0)
+		{
+			printf("Error: diff multiplier can't be zero or negative\n");
+			exit(EXIT_FAILURE);
+		}
 		opt_difficulty = 1.0/d;
 		break;
 	case 'e':
@@ -2556,7 +2660,8 @@ static void parse_arg(int key, char *arg)
 	case 'V':
 		show_version_and_exit();
 	case 'h':
-		show_usage_and_exit(0);
+		printf(usage);
+		exit(EXIT_SUCCESS);
 	case 1070: /* --gpu-clock */
 	{
 		char *pch = strtok(arg, ",");
@@ -2576,7 +2681,11 @@ static void parse_arg(int key, char *arg)
 		while(pch != NULL && n < MAX_GPUS)
 		{
 			int dev_id = device_map[n++];
-			device_mem_clocks[dev_id] = atoi(pch);
+			if(*pch == '+' || *pch == '-')
+				device_mem_offsets[dev_id] = atoi(pch);
+			else
+				device_mem_clocks[dev_id] = atoi(pch);
+			need_nvsettings = true;
 			pch = strtok(NULL, ",");
 		}
 	}
@@ -2605,8 +2714,30 @@ static void parse_arg(int key, char *arg)
 		}
 	}
 	break;
+	case 1074: /* --logfile */
+	{
+		if (strlen(arg) > 0)
+		{
+			logfilename = strdup(arg);
+			logfilepointer = fopen(logfilename, "w");
+			if (logfilepointer == NULL)
+				printf("\nWarning: can't create file %s\nLogging to file is disabled\n", logfilename);
+			else
+			{
+				printf("\nLogfile = %s\n", logfilename);
+				opt_logfile = true;
+			}
+		}
+		else
+			printf("\nNo logfile name.\nLogging to file is disabled\n ");
+	}
+	break;
+	case 1075:
+		opt_hwmonitor = true;
+		break;
 	default:
-		show_usage_and_exit(1);
+		printf(usage);
+		exit(EXIT_FAILURE);
 	}
 
 	if(use_syslog)
@@ -2685,19 +2816,13 @@ static void parse_cmdline(int argc, char *argv[])
 	}
 	if(optind < argc)
 	{
-		fprintf(stderr, "%s: unsupported non-option argument '%s'\n",
+		fprintf(stdout, "%s: unsupported non-option argument '%s'\n",
 				argv[0], argv[optind]);
 		show_usage_and_exit(1);
 	}
 
 	parse_config();
 
-	if(opt_algo == ALGO_HEAVY && opt_vote == 9999)
-	{
-		fprintf(stderr, "%s: Heavycoin hash requires block reward vote parameter (see --vote)\n",
-				argv[0]);
-		show_usage_and_exit(1);
-	}
 }
 
 #ifndef WIN32
@@ -2706,16 +2831,14 @@ static void signal_handler(int sig)
 	switch(sig)
 	{
 	case SIGHUP:
-		applog(LOG_INFO, "SIGHUP received");
 		break;
 	case SIGINT:
+	case SIGTSTP:
 		signal(sig, SIG_IGN);
-		applog(LOG_INFO, "SIGINT received, exiting");
-		proper_exit(2);
+		proper_exit(EXIT_FAILURE);
 		break;
 	case SIGTERM:
-		applog(LOG_INFO, "SIGTERM received, exiting");
-		proper_exit(2);
+		proper_exit(EXIT_FAILURE);
 		break;
 	}
 }
@@ -2726,11 +2849,11 @@ BOOL WINAPI ConsoleHandler(DWORD dwType)
 	{
 	case CTRL_C_EVENT:
 		applog(LOG_INFO, "CTRL_C_EVENT received, exiting");
-		proper_exit(2);
+		proper_exit(EXIT_FAILURE);
 		break;
 	case CTRL_BREAK_EVENT:
 		applog(LOG_INFO, "CTRL_BREAK_EVENT received, exiting");
-		proper_exit(2);
+		proper_exit(EXIT_FAILURE);
 		break;
 	default:
 		return false;
@@ -2750,7 +2873,11 @@ static int msver(void)
 		case 1700: version = 2012; break;
 		case 1800: version = 2013; break;
 		case 1900: version = 2015; break;
-		default: version = _MSC_VER / 100;
+		default:
+			if(_MSC_VER < 1920)
+				version = 2017;
+			else
+				version = 2019;
 	}
 #else
 	version = 0;
@@ -2758,10 +2885,19 @@ static int msver(void)
 	return version;
 }
 
+bool strictaliasingtest(short *h, long *k)
+{
+	*h = 5;
+	*k = 6;
+	if(*h == 5)
+		return true;
+	else
+		return false;
+}
+
 int main(int argc, char *argv[])
 {
 	struct thr_info *thr;
-	long flags;
 	int i;
 	
 	// strdup on char* to allow a common free() if used
@@ -2773,6 +2909,10 @@ int main(int argc, char *argv[])
 #else
 	printf("ccminer " PACKAGE_VERSION " (32bit) for nVidia GPUs\n");
 #endif
+	printf("\nBased on pooler cpuminer 2.3.2 and the tpruvot@github fork\n");
+	printf("CUDA support by Christian Buchner, Christian H. and DJM34\n");
+	printf("Includes optimizations and additions implemented by sp-hash, tpruvot, tsiv and others.\n\n");
+
 #ifdef _MSC_VER
 	printf("Compiled with Visual Studio %d ", msver());
 #else
@@ -2786,15 +2926,39 @@ int main(int argc, char *argv[])
 #endif
 #endif
 #endif
-	printf("using Nvidia CUDA Toolkit %d.%d\n\n", CUDART_VERSION / 1000, (CUDART_VERSION % 1000) / 10);
-	printf("Based on pooler cpuminer 2.3.2 and the tpruvot@github fork\n");
-	printf("CUDA support by Christian Buchner, Christian H. and DJM34\n");
-	printf("Includes optimizations implemented by sp-hash, klaust, tpruvot and tsiv.\n\n");
+	printf("using the Nvidia CUDA Toolkit %d.%d\n\n", CUDART_VERSION / 1000, (CUDART_VERSION % 1000) / 10);
+
+#ifdef WIN32
+	if (CUDART_VERSION == 10010 && _MSC_VER > 1920)
+		printf("WARNING! CUDA 10.1 might not be compatible with Visual Studio versions newer than 2019 RTW\n\n");
+	if(CUDART_VERSION == 10000 && _MSC_VER >= 1920)
+		printf("WARNING! CUDA 10 is not compatible with Visual Studio versions newer than 2017\n\n");
+	if (CUDART_VERSION == 9020 && _MSC_VER > 1913)
+		printf("WARNING! CUDA 9.2 is not compatible with Visual Studio versions newer than 2017 Update 6\n\n");
+#endif
+#if !defined __clang__ && defined __GNUC__
+#define GCC_VERSION (__GNUC__ * 10000 + __GNUC_MINOR__ * 100 + __GNUC_PATCHLEVEL__)
+	if(CUDART_VERSION == 8000 && GCC_VERSION > 50000)
+		printf("WARNING! CUDA 8 IS NOT COMPATIBLE WITH GCC VERSION NEWER THAN 5!\n");
+	if((CUDART_VERSION == 9000 || CUDART_VERSION == 9010) && GCC_VERSION > 60000)
+		printf("WARNING! CUDA 9 AND 9.1 ARE NOT COMPATIBLE WITH GCC VERSION NEWER THAN 6!\n");
+	if ((CUDART_VERSION == 10000 || CUDART_VERSION == 9020) && GCC_VERSION > 70301)
+		printf("WARNING! CUDA 9.2 AND CUDA 10 ARE NOT COMPATIBLE WITH GCC VERSION NEWER THAN 7.3.1!\n");
+	if (CUDART_VERSION == 10010 && GCC_VERSION > 80201)
+		printf("WARNING! CUDA 10.1 IS NOT COMPATIBLE WITH GCC VERSION NEWER THAN 8.2.1!\n");
+#endif
+
+	long      sat[1];
+	if(strictaliasingtest((short *)sat, sat))
+	{
+		printf("Warning! This build may produce wrong results or even crash!\n");
+		printf("Please use the -fno-strict-aliasing compiler option!\n\n");
+	}
 
 	rpc_user = strdup("");
 	rpc_pass = strdup("");
 
-	for(int i = 0; i < MAX_GPUS; i++)
+	for(i = 0; i < MAX_GPUS; i++)
 		device_pstate[i] = -1;
 
 	// number of cpus for thread affinity
@@ -2813,58 +2977,99 @@ int main(int argc, char *argv[])
 #endif
 	// number of gpus
 	active_gpus = cuda_num_devices();
-//	cuda_devicereset();
 
-	if(active_gpus > 1)
+	// default thread to device map
+	for(i = 0; i < MAX_GPUS; i++)
 	{
-		// default thread to device map
-		for(i = 0; i < MAX_GPUS; i++)
-		{
-			device_map[i] = i;
-		}
+		device_map[i] = i;
 	}
 
-	cuda_devicenames();
+	for(i = 0; i < active_gpus; i++)
+	{
+		int dev_id = device_map[i];
+		cudaError_t err;
+		cudaDeviceProp props;
+		err = cudaGetDeviceProperties(&props, dev_id);
+		if(err != cudaSuccess)
+		{
+			applog(LOG_ERR, "%s", cudaGetErrorString(err));
+			exit(1);
+		}
+		device_name[dev_id] = strdup(props.name);
+	}
 
 	/* parse command line */
 	parse_cmdline(argc, argv);
+	if(opt_algo == ALGO_INVALID)
+	{
+		applog(LOG_ERR, "Error: no algo or invalid algo");
+		exit(EXIT_FAILURE);
+	}
 
+	if(!opt_n_threads)
+		opt_n_threads = active_gpus;
+
+	cuda_get_device_sm();
+
+	if(opt_protocol)
+	{
+		curl_version_info_data *info;
+
+		info = curl_version_info(CURLVERSION_NOW);
+		applog(LOG_DEBUG, "using libcurl %s", info->version);
+		int features = info->features;
+		if(features&CURL_VERSION_IPV6)
+			applog(LOG_DEBUG, "libcurl supports IPv6");
+		if(features&CURL_VERSION_SSL)
+			applog(LOG_DEBUG, "libcurl supports SSL");
+		if(features&CURL_VERSION_IDN)
+			applog(LOG_DEBUG, "libcurl supports international domain names");
+	}
 	if(!opt_benchmark && !rpc_url)
 	{
-		fprintf(stderr, "%s: no URL supplied\n", argv[0]);
+		fprintf(stdout, "%s: no URL supplied\n", argv[0]);
 		show_usage_and_exit(1);
 	}
-	cuda_devicereset();
 
 	if(!rpc_userpass)
 	{
 		rpc_userpass = (char*)malloc(strlen(rpc_user) + strlen(rpc_pass) + 2);
-		if(!rpc_userpass)
-			return 1;
+		if(rpc_userpass == NULL)
+		{
+			applog(LOG_ERR, "Out of memory!");
+			proper_exit(EXIT_FAILURE);
+		}
 		sprintf(rpc_userpass, "%s:%s", rpc_user, rpc_pass);
 	}
 
 	/* init stratum data.. */
 	memset(&stratum.url, 0, sizeof(stratum));
 
-	pthread_mutex_init(&stratum.sock_lock, NULL);
-	pthread_mutex_init(&stratum.work_lock, NULL);
+	int err = pthread_mutex_init(&stratum.sock_lock, NULL);
+	if(err != 0)
+	{
+		applog(LOG_ERR, "pthread_mutex_init error %d", err);
+		proper_exit(EXIT_FAILURE);
+	}
+	err = pthread_mutex_init(&stratum.work_lock, NULL);
+	if(err != 0)
+	{
+		applog(LOG_ERR, "pthread_mutex_init error %d", err);
+		proper_exit(EXIT_FAILURE);
+	}
 
-	flags = !opt_benchmark && strncmp(rpc_url, "https:", 6)
-		? (CURL_GLOBAL_ALL & ~CURL_GLOBAL_SSL)
-		: CURL_GLOBAL_ALL;
-	if(curl_global_init(flags))
+	if(curl_global_init(CURL_GLOBAL_ALL))
 	{
 		applog(LOG_ERR, "CURL initialization failed");
 		return 1;
 	}
 
-#ifndef WIN32
 	if(opt_background)
 	{
+#ifndef WIN32
 		i = fork();
-		if(i < 0) exit(1);
-		if(i > 0) exit(0);
+		if(i < 0) proper_exit(EXIT_FAILURE);
+		if(i > 0) proper_exit(EXIT_FAILURE);
 		i = setsid();
 		if(i < 0)
 			applog(LOG_ERR, "setsid() failed (errno = %d)", errno);
@@ -2873,10 +3078,25 @@ int main(int argc, char *argv[])
 			applog(LOG_ERR, "chdir() failed (errno = %d)", errno);
 		signal(SIGHUP, signal_handler);
 		signal(SIGTERM, signal_handler);
-	}
-	/* Always catch Ctrl+C */
-	signal(SIGINT, signal_handler);
+		signal(SIGINT, signal_handler);
+		signal(SIGTSTP, signal_handler);
 #else
+		HWND hcon = GetConsoleWindow();
+		if(hcon)
+		{
+			// this method also hide parent command line window
+			ShowWindow(hcon, SW_HIDE);
+		}
+		else
+		{
+			HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+			CloseHandle(h);
+			FreeConsole();
+		}
+#endif
+	}
+
+#ifdef WIN32
 	SetConsoleCtrlHandler((PHANDLER_ROUTINE)ConsoleHandler, TRUE);
 	if(opt_priority > 0)
 	{
@@ -2937,8 +3157,6 @@ int main(int argc, char *argv[])
 			applog(LOG_DEBUG, "Binding process to cpu mask %x", opt_affinity);
 		affine_to_cpu_mask(-1, opt_affinity);
 	}
-	if(!opt_n_threads)
-		opt_n_threads = active_gpus;
 
 #ifdef HAVE_SYSLOG_H
 	if(use_syslog)
@@ -2946,12 +3164,18 @@ int main(int argc, char *argv[])
 #endif
 
 	work_restart = (struct work_restart *)calloc(opt_n_threads, sizeof(*work_restart));
-	if(!work_restart)
-		return 1;
+	if(work_restart == NULL)
+	{
+		applog(LOG_ERR, "Out of memory!");
+		proper_exit(EXIT_FAILURE);
+	}
 
 	thr_info = (struct thr_info *)calloc(opt_n_threads + 4, sizeof(*thr));
-	if(!thr_info)
-		return 1;
+	if(thr_info == NULL)
+	{
+		applog(LOG_ERR, "Out of memory!");
+		proper_exit(EXIT_FAILURE);
+	}
 
 	/* init workio thread info */
 	work_thr_id = opt_n_threads;
@@ -2960,6 +3184,13 @@ int main(int argc, char *argv[])
 	thr->q = tq_new();
 	if(!thr->q)
 		return 1;
+
+	for(i = 0; i < MAX_GPUS; i++)
+		mining_has_stopped[i] = true;
+
+#ifdef WIN32
+	timeBeginPeriod(1); // enable high timer precision
+#endif
 
 	/* start work I/O thread */
 	if(pthread_create(&thr->pth, NULL, workio_thread, thr))
@@ -3007,38 +3238,63 @@ int main(int argc, char *argv[])
 			tq_push(thr_info[stratum_thr_id].q, strdup(rpc_url));
 	}
 
+
+#ifdef __linux__
+	if(need_nvsettings)
+	{
+		if(nvs_init() < 0)
+			need_nvsettings = false;
+	}
+#endif
+
 #ifdef USE_WRAPNVML
 #if defined(__linux__) || defined(_WIN64)
 	/* nvml is currently not the best choice on Windows (only in x64) */
 	hnvml = nvml_create();
-	if (hnvml) {
-		bool gpu_reinit = false;// (opt_cudaschedule >= 0);
+	if(hnvml)
+	{
+		bool gpu_reinit = (opt_cudaschedule >= 0); //false
 		cuda_devicenames(); // refresh gpu vendor name
-		applog(LOG_INFO, "NVML GPU monitoring enabled.");
+		if(!opt_quiet)
+			applog(LOG_INFO, "NVML GPU monitoring enabled.");
 		for(int n = 0; n < active_gpus; n++)
 		{
 			if(nvml_set_pstate(hnvml, device_map[n]) == 1)
 				gpu_reinit = true;
 			if(nvml_set_plimit(hnvml, device_map[n]) == 1)
 				gpu_reinit = true;
-			if(nvml_set_clocks(hnvml, device_map[n]) == 1)
+			if(!is_windows() && nvml_set_clocks(hnvml, device_map[n]) == 1)
 				gpu_reinit = true;
 			if(gpu_reinit)
 			{
-//				cuda_reset_device(n, NULL);
+				cuda_reset_device(n, NULL);
 			}
 		}
 	}
 #endif
 #ifdef WIN32
-	if(!hnvml && nvapi_init() == 0)
+	if(nvapi_init() == 0)
 	{
-		applog(LOG_INFO, "NVAPI GPU monitoring enabled.");
-		cuda_devicenames(); // refresh gpu vendor name
+		if(!opt_quiet)
+			applog(LOG_INFO, "NVAPI GPU monitoring enabled.");
+		if(!hnvml)
+		{
+			cuda_devicenames(); // refresh gpu vendor name
+		}
+		nvapi_init_settings();
 	}
 #endif
-	else if(!hnvml)
+	else if(!hnvml && !opt_quiet)
 		applog(LOG_INFO, "GPU monitoring is not available.");
+
+	// force reinit to set default device flags
+	if(opt_cudaschedule >= 0 && !hnvml)
+	{
+		for(int n = 0; n < active_gpus; n++)
+		{
+			cuda_reset_device(n, NULL);
+		}
+	}
 #endif
 
 	if(opt_api_listen)
@@ -3058,6 +3314,37 @@ int main(int argc, char *argv[])
 			return 1;
 		}
 	}
+	int pterr;
+	for(i = 0; i < opt_n_threads; i++)
+	{
+		thr = &thr_info[i];
+		thr->gpu.monitor.sampling_flag = false;
+		pterr = pthread_mutex_init(&thr->gpu.monitor.lock, NULL);
+		if(pterr != 0)
+		{
+			applog(LOG_ERR, "pthread_mutex_init error %d", pterr);
+			proper_exit(EXIT_FAILURE);
+		}
+		pterr = pthread_cond_init(&thr->gpu.monitor.sampling_signal, NULL);
+		if(pterr != 0)
+		{
+			applog(LOG_ERR, "pthread_cond_init error %d", pterr);
+			proper_exit(EXIT_FAILURE);
+		}
+	}
+
+#ifdef USE_WRAPNVML
+	// to monitor gpu activitity during work, a thread is required
+	monitor_thr_id = opt_n_threads + 4;
+	thr = &thr_info[monitor_thr_id];
+	thr->id = monitor_thr_id;
+	thr->q = tq_new();
+	if(thr->q)
+		if(unlikely(pthread_create(&thr->pth, NULL, monitor_thread, thr)))
+		{
+			applog(LOG_ERR, "Monitoring thread %d create failed", i);
+		}
+#endif
 
 	/* start mining threads */
 	for(i = 0; i < opt_n_threads; i++)
@@ -3075,7 +3362,7 @@ int main(int argc, char *argv[])
 		if(unlikely(pthread_create(&thr->pth, NULL, miner_thread, thr)))
 		{
 			applog(LOG_ERR, "thread %d create failed", i);
-			return 1;
+			proper_exit(EXIT_FAILURE);
 		}
 	}
 
@@ -3084,16 +3371,24 @@ int main(int argc, char *argv[])
 		   opt_n_threads, opt_n_threads > 1 ? "s" : "",
 		   algo_names[opt_algo]);
 
-#ifdef WIN32
-	timeBeginPeriod(1); // enable high timer precision (similar to Google Chrome Trick)
-#endif
-
 	/* main loop - simply wait for workio thread to exit */
 	pthread_join(thr_info[work_thr_id].pth, NULL);
 
+	/* wait for mining threads */
+	for(i = 0; i < opt_n_threads; i++)
+	{
+		pthread_join(thr_info[i].pth, NULL);
+	}
+
+	if(monitor_thr_id != -1)
+	{
+		pthread_join(thr_info[monitor_thr_id].pth, NULL);
+		//tq_free(thr_info[monitor_thr_id].q);
+	}
+
 	applog(LOG_INFO, "workio thread dead, exiting.");
 
-	proper_exit(0);
+	proper_exit(EXIT_SUCCESS);
 
 	return 0;
 }
